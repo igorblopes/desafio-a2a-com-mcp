@@ -516,7 +516,8 @@ Nenhum segredo vai para o repositório. O `.gitignore` do starter já ignora `.e
 | `express` | — | 5.3.0 |
 | `zod` | 4.6.7 | — (se necessário) |
 | `tsx` (dev, executa TS) | 4.23.15 | 4.23.15 |
-| `typescript` + `@types/node` (dev, só checagem de tipos) | a confirmar no Passo 3 | idem |
+| `typescript` (dev, só checagem de tipos) | 7.0.2 | 7.0.2 |
+| `@types/node` (dev) | 22.20.5 | 22.20.5 |
 
 Os `package-lock.json` são commitados, e `npm ci` reproduz a instalação. `"engines": { "node": ">=22" }`.
 
@@ -615,3 +616,27 @@ O equivalente em bash usa `export REQUEST_STATE_SECRET=...`. A ordem de subida n
 - [ ] (Opcional) `git remote add upstream https://github.com/devfullcycle/desafio-a2a-com-mcp.git`.
 - [ ] Gerar um `REQUEST_STATE_SECRET` local, sem commitá-lo.
 - [ ] Passo 3: `servidor-mcp/` com `package.json` travado, `main.ts` (borda HTTP + log), `config.ts`, `servidor.ts` e `listar_salas` + `politica://uso`. Meta: verificações 01–08 verdes.
+
+---
+
+## 17. Estado da implementação
+
+### Passo 3: servidor MCP mínimo (07/11/2026)
+
+Implementado em `servidor-mcp/`. Ver `servidor-mcp/README.md` para comandos e exemplos de request.
+
+| Item | Situação |
+|---|---|
+| `main.ts`, `config.ts`, `log.ts`, `servidor.ts` | ✅ |
+| `tools/listar-salas.ts` + `dominio/agenda.ts` (só salas) | ✅ |
+| Capability anunciada | só `tools`. `resources` entra junto com `politica://uso` no Passo 4 |
+| `consultar_disponibilidade`, `reservar_sala`, `politica://uso`, `regras.ts`, `estado-mrtr.ts` | ⏳ passos seguintes |
+| `REQUEST_STATE_SECRET` | ainda não é lida; passa a ser obrigatória no passo do MRTR |
+
+Ajustes em relação ao plano:
+
+- **A borda HTTP repassa a resposta em streaming** (`Readable.fromWeb(...).pipe(res)`), sem bufferizar. Com `responseMode: 'json'`, as chamadas comuns voltam como um JSON único. Mas `subscriptions/listen` é sempre SSE, e o MCP Inspector (modo `modern`) abre esse stream antes do `tools/list`. Na primeira versão, que esperava o corpo inteiro, o Inspector ficava travado.
+- **O `onerror` do SDK recebe tanto rejeições de protocolo quanto falhas internas.** O log separa os dois casos: `rejeitado` e `erro`.
+- **Validação de Host (`hostHeaderValidationResponse` com `localhostAllowedHostnames`)** contra DNS rebinding, antes do handler.
+
+Validador oficial com só o servidor MCP no ar: **5/36**. Passam 02, 03, 04, 05 e 06. A 01 falha porque só existe 1 das 3 tools. As 07–20 dependem do Passo 4 em diante, e as 21–36 dependem do agente.
