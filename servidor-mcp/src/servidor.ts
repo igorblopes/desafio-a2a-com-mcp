@@ -1,14 +1,22 @@
 // Factory do McpServer. O createMcpHandler chama esta função a CADA request:
 // é isso que torna o servidor stateless (nada sobrevive entre requests no
 // objeto do protocolo). Capabilities são derivadas do que registramos:
-// registrar tools anuncia `tools`; resources entram no próximo passo.
+// registrar uma tool anuncia `tools`; registrar um resource anuncia `resources`.
 import { McpServer } from '@modelcontextprotocol/server';
 import { log } from './log.ts';
 import { registrarListarSalas } from './tools/listar-salas.ts';
+import { registrarPolitica } from './recursos/politica.ts';
 
 export function criarServidor(): McpServer {
-  const servidor = new McpServer({ name: 'central-de-salas', version: '1.0.0' });
+  // O catálogo é fixo (as tools e o resource não mudam com o processo no ar),
+  // então não prometemos notificações de list_changed. Sem isto, o SDK
+  // anuncia listChanged: true ao registrar a primeira tool ou resource.
+  const servidor = new McpServer(
+    { name: 'central-de-salas', version: '1.0.0' },
+    { capabilities: { tools: { listChanged: false }, resources: { listChanged: false } } },
+  );
   registrarListarSalas(servidor);
+  registrarPolitica(servidor);
   return servidor;
 }
 

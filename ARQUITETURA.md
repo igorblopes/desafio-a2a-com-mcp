@@ -142,6 +142,8 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │   ├── package.json             versões exatas, "type": "module", scripts start/check
 │   ├── package-lock.json
 │   ├── tsconfig.json
+│   ├── test/
+│   │   └── contrato.test.ts     testes de contrato: sobe o processo real e conversa por HTTP (node:test)
 │   └── src/
 │       ├── main.ts              sobe node:http na 7301, loga cada request no stderr, delega a handler.fetch
 │       ├── config.ts            lê e valida env (porta, DADOS_DIR, REQUEST_STATE_SECRET ≥ 32 bytes, TTL)
@@ -521,6 +523,8 @@ Nenhum segredo vai para o repositório. O `.gitignore` do starter já ignora `.e
 
 Os `package-lock.json` são commitados, e `npm ci` reproduz a instalação. `"engines": { "node": ">=22" }`.
 
+Testes usam o `node:test` nativo do Node (executado via `node --import tsx --test`), sem framework adicional.
+
 A opção por `tsx` em vez de `tsc` + `dist/` é pela simplicidade: um comando só, sem etapa de build, e com stack traces apontando para o `.ts`. A checagem de tipos fica em um script `check` separado.
 
 ### 12.3 Subida a partir de um clone limpo (planejado)
@@ -640,3 +644,61 @@ Ajustes em relação ao plano:
 - **Validação de Host (`hostHeaderValidationResponse` com `localhostAllowedHostnames`)** contra DNS rebinding, antes do handler.
 
 Validador oficial com só o servidor MCP no ar: **5/36**. Passam 02, 03, 04, 05 e 06. A 01 falha porque só existe 1 das 3 tools. As 07–20 dependem do Passo 4 em diante, e as 21–36 dependem do agente.
+
+### Passo 4: tools, resources e contratos MCP (07/11/2026)
+
+| Item | Situação |
+|---|---|
+| `recursos/politica.ts` (`politica://uso`, `text/markdown`) | ✅ |
+| Capabilities anunciadas | `tools` e `resources`, ambas com `listChanged: false` |
+| `test/contrato.test.ts` (20 testes, `npm test`) | ✅ |
+| `consultar_disponibilidade`, `reservar_sala`, `regras.ts`, `estado-mrtr.ts` | ⏳ passos seguintes |
+
+**Tools × resources no código.** Uma *tool* é uma ação que o modelo (ou o agente) decide **executar**, com argumentos validados por `inputSchema` e resultado descrito por `outputSchema`. Um *resource* é um dado que a aplicação **lê** por URI, sem argumentos e sem efeito colateral. Os dois são registrados na mesma factory (`servidor.ts`): `registerTool` em `tools/`, `registerResource` em `recursos/`. O registro é o que gera a descoberta (`tools/list`, `resources/list`) e o despacho (`tools/call`, `resources/read`). Não existe rota HTTP por tool ou resource.
+
+**Contrato de `listar_salas`.**
+
+- Entrada: `inputSchema = { type: "object", properties: {} }` (zod `z.object({})`). Não há parâmetros de negócio.
+- Saída: `outputSchema` com o mesmo envelope de `exemplos/wire/01`: `{ salas: Sala[] }`, com `Sala = { id: string, nome: string, capacidade: integer ≥ 1, recursos: string[] }` e os quatro campos obrigatórios. O zod gera o schema inline, sem `$defs`/`title` como no exemplo em Python, mas a estrutura e os tipos são os mesmos.
+- Resultado: `structuredContent = { salas }` e um único bloco `text` com `JSON.stringify(structuredContent, null, 2)`. O SDK valida o `structuredContent` contra o `outputSchema` antes de responder.
+- `capacidade` passou de `z.number().int()` para `z.int().min(1)`. O schema publicado agora diz `minimum: 1` em vez do intervalo de inteiros seguros (que admitia capacidade negativa). Os dados do starter (4 a 20) já cumprem isso, e uma sala sem capacidade derrubaria o processo na subida.
+
+**Leitura de `politica://uso`.** `recursos/politica.ts` lê `dados/politica-de-uso.md` uma vez ao subir e devolve o texto **integral, sem transformação**, com `mimeType: text/markdown` e `uri` igual à pedida. A versão (`versao: 2026-11-01`) **não** está no código: ela é a primeira linha do arquivo, e só aparece no log de subida (`politica="versao: 2026-11-01"`). O agente vai extraí-la lendo o resource. `resources/list` devolve `{ uri, name: "politica-de-uso", title, description, mimeType }`, os mesmos `uri` e `mimeType` da leitura.
+
+**URI inexistente.** O SDK responde `-32602 Resource not found` com `data.uri`, HTTP 200. Não escrevemos nada para isso. Uma URI que o servidor não anunciou é um **parâmetro inválido** do request, e não "um recurso vazio": um `contents: []` faria o cliente acreditar que leu a política e que ela não tem regras.
+
+**Fim de linha no Windows.** O Git for Windows vem com `core.autocrlf=true`, então `dados/politica-de-uso.md` fica em CRLF na cópia de trabalho (no repositório, LF). O servidor serve o arquivo como está no disco, e o teste compara byte a byte com o mesmo arquivo. Quem extrair a versão da primeira linha precisa aceitar `\r?\n`: isso vale para o teste e, no passo do agente, para o campo `politica` do artifact. Não adicionamos `.gitattributes` para não mudar a configuração do repositório.
+
+**Capabilities.** Sem configuração, o SDK anuncia `listChanged: true` ao registrar a primeira tool ou resource. Como o catálogo é fixo, `servidor.ts` declara `listChanged: false` para as duas: não prometemos notificações que nunca serão enviadas. `subscribe` e `prompts` não são anunciados nem atendidos (`prompts/list` e `resources/subscribe` recebem `-32601`). O cliente descobre isso com `server/discover`.
+
+**Metadados e headers.** `resources/list` e `resources/read` passam pela mesma validação do SDK que as tools: sem `protocolVersion` ou sem `clientCapabilities`, HTTP 400 e `-32602`. Em `resources/read`, o `Mcp-Name` é **obrigatório** e precisa ser igual a `params.uri`. Se ele estiver ausente ou divergente, a resposta é HTTP 400 e `-32020`. Em `resources/list`, que não tem nome, o header não vai.
+
+**Estratégia de testes.** `npm test` sobe `src/main.ts` como processo filho numa porta livre e faz requests HTTP reais, iguais aos do validador, capturando o stderr. Isso cobre:
+
+- a descoberta: `server/discover`, `tools/list` e `resources/list`;
+- a execução: `tools/call` e `resources/read`, comparando com os arquivos de `dados/`;
+- os casos negativos: tool e URI inexistentes, `_meta` incompleto nos quatro métodos e header divergente ou ausente;
+- os logs: método, id e traceparent, além de `-` quando o traceparent não vem.
+
+Nada é simulado. Um teste de mutação manual (remover o `registrarPolitica`) derrubou 2 testes, como esperado.
+
+**Exemplos reproduzíveis** (com o servidor no ar; PowerShell 5.1):
+
+```powershell
+$h = @{ 'Accept'='application/json, text/event-stream'; 'MCP-Protocol-Version'='2026-07-28' }
+$meta = @{ 'io.modelcontextprotocol/protocolVersion'='2026-07-28'; 'io.modelcontextprotocol/clientCapabilities'=@{} }
+
+# resources/list
+$h['Mcp-Method']='resources/list'
+$b = @{ jsonrpc='2.0'; id=1; method='resources/list'; params=@{ _meta=$meta } } | ConvertTo-Json -Depth 6
+(Invoke-RestMethod http://localhost:7301/mcp -Method Post -ContentType 'application/json' -Headers $h -Body $b).result.resources
+
+# resources/read politica://uso (Mcp-Name obrigatório, igual à URI)
+$h['Mcp-Method']='resources/read'; $h['Mcp-Name']='politica://uso'
+$b = @{ jsonrpc='2.0'; id=2; method='resources/read'; params=@{ uri='politica://uso'; _meta=$meta } } | ConvertTo-Json -Depth 6
+(Invoke-RestMethod http://localhost:7301/mcp -Method Post -ContentType 'application/json' -Headers $h -Body $b).result.contents[0].text
+```
+
+Ou pelo Inspector: `npx @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:7301/mcp --transport http --protocol-era modern --method resources/read --uri politica://uso`.
+
+Validador oficial com só o servidor MCP no ar: **7/36**. Passam 02 a 08. A 01 espera as três tools; as 09 a 20 dependem das regras, de `reservar_sala` e do MRTR; as 21 a 36 dependem do agente.

@@ -10,7 +10,7 @@ import { config } from '../config.ts';
 export const SalaSchema = z.object({
   id: z.string(),
   nome: z.string(),
-  capacidade: z.number().int(),
+  capacidade: z.int().min(1), // pessoas; uma sala sem lugar nenhum não faz sentido
   recursos: z.array(z.string()),
 });
 export type Sala = z.infer<typeof SalaSchema>;

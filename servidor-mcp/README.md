@@ -2,7 +2,7 @@
 
 Servidor MCP da Central de Salas: Streamable HTTP, revisão `2026-07-28`, sem sessão. Cada request carrega no `_meta` a própria versão e as próprias capabilities, e o servidor responde sempre em JSON (nunca SSE).
 
-> **Estado atual (Passo 3):** só existe a tool `listar_salas`. `consultar_disponibilidade`, `reservar_sala`, o resource `politica://uso` e o MRTR entram nos próximos passos.
+> **Estado atual (Passo 4):** existem a tool `listar_salas` e o resource `politica://uso`. `consultar_disponibilidade`, `reservar_sala` e o MRTR entram nos próximos passos.
 
 ## Pré-requisito
 
@@ -22,13 +22,14 @@ Outros scripts:
 |---|---|
 | `npm run dev` | Sobe com `tsx watch`, reiniciando a cada alteração em `src/` |
 | `npm run check` | Checagem de tipos (`tsc --noEmit`), sem gerar arquivos |
+| `npm test` | Testes de contrato (`node:test`), sem precisar de servidor no ar |
 
 ## Variáveis de ambiente
 
 | Variável | Padrão | Uso |
 |---|---|---|
 | `MCP_PORT` | `7301` | Porta HTTP |
-| `DADOS_DIR` | `../dados` (relativo a `servidor-mcp/`) | Pasta com `salas.json` |
+| `DADOS_DIR` | `../dados` (relativo a `servidor-mcp/`) | Pasta com `salas.json` e `politica-de-uso.md` |
 
 Exemplo, no PowerShell: `$env:MCP_PORT = '7401'; npm start`.
 
@@ -111,3 +112,46 @@ Ele avisa que notificações enviadas no meio de uma chamada são descartadas no
 | `src/servidor.ts` | Factory do `McpServer` (uma instância por request, por isso stateless) e tratamento do `onerror` |
 | `src/tools/listar-salas.ts` | Tool `listar_salas`: `structuredContent` conforme o `outputSchema` e o mesmo JSON em texto |
 | `src/dominio/agenda.ts` | Carrega e valida `dados/salas.json` uma vez (singleton de módulo) |
+| `src/recursos/politica.ts` | Resource `politica://uso`: lê `dados/politica-de-uso.md` uma vez e o serve sem transformação (`text/markdown`) |
+| `test/contrato.test.ts` | Testes de contrato (`npm test`): sobe o servidor numa porta livre e faz requests HTTP reais |
+
+## Resources (Passo 4)
+
+O servidor expõe um resource, `politica://uso` (`text/markdown`), com o conteúdo integral de `dados/politica-de-uso.md`. O arquivo é lido uma vez ao subir. Em `resources/read`, o header `Mcp-Name` é obrigatório e precisa ser igual à URI. Uma URI que não existe recebe o erro `-32602`, nunca `contents` vazio.
+
+Os exemplos reaproveitam o `$url` e o `$meta` definidos em "Exemplos de request" acima.
+
+```powershell
+# resources/list
+$corpo = @{ jsonrpc = '2.0'; id = 10; method = 'resources/list'; params = @{ _meta = $meta } } | ConvertTo-Json -Depth 10
+$h = @{ 'Accept' = 'application/json, text/event-stream'; 'MCP-Protocol-Version' = '2026-07-28'; 'Mcp-Method' = 'resources/list' }
+$r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Headers $h -Body $corpo
+$r.result.resources | Select-Object uri, name, mimeType   # politica://uso  politica-de-uso  text/markdown
+
+# resources/read politica://uso (Mcp-Name igual à URI)
+$corpo = @{ jsonrpc = '2.0'; id = 11; method = 'resources/read'
+            params = @{ uri = 'politica://uso'; _meta = $meta } } | ConvertTo-Json -Depth 10
+$h = @{ 'Accept' = 'application/json, text/event-stream'; 'MCP-Protocol-Version' = '2026-07-28'
+        'Mcp-Method' = 'resources/read'; 'Mcp-Name' = 'politica://uso' }
+$r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Headers $h -Body $corpo
+$r.result.contents[0].mimeType                            # text/markdown
+$r.result.contents[0].text                                # versao: 2026-11-01 ... (o arquivo inteiro)
+
+# resources/read de URI inexistente: erro JSON-RPC -32602 (com HTTP 200, por isso não lança exceção)
+$corpo = @{ jsonrpc = '2.0'; id = 12; method = 'resources/read'
+            params = @{ uri = 'politica://inexistente'; _meta = $meta } } | ConvertTo-Json -Depth 10
+$h['Mcp-Name'] = 'politica://inexistente'
+$r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Headers $h -Body $corpo
+$r.error | ConvertTo-Json -Compress
+# {"code":-32602,"message":"Resource not found: politica://inexistente","data":{"uri":"politica://inexistente"}}
+```
+
+No PowerShell 5.1, textos com acento nas respostas (como o `title` "Política de uso das salas" do `resources/list`) podem aparecer como `PolÃ­tica`. O servidor envia UTF-8; é o `Invoke-RestMethod` do 5.1 que decodifica como Latin-1 quando o `Content-Type` não traz `charset`. O conteúdo da política é ASCII e não é afetado.
+
+## Testes automatizados
+
+```powershell
+npm test
+```
+
+Os testes sobem o próprio servidor numa porta livre e fazem requests HTTP reais, iguais aos do validador. Não é preciso ter outro servidor no ar. Eles cobrem `tools/list`, `listar_salas`, `resources/list`, `resources/read`, a URI inexistente, o `_meta` obrigatório, a consistência dos headers e os logs no stderr.
