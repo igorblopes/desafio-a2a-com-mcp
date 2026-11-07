@@ -143,7 +143,8 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │   ├── package-lock.json
 │   ├── tsconfig.json
 │   ├── test/
-│   │   └── contrato.test.ts     testes de contrato: sobe o processo real e conversa por HTTP (node:test)
+│   │   ├── contrato.test.ts     testes de contrato: sobe o processo real e conversa por HTTP (node:test)
+│   │   └── regras.test.ts       testes unitários das regras de domínio (funções puras)
 │   └── src/
 │       ├── main.ts              sobe node:http na 7301, loga cada request no stderr, delega a handler.fetch
 │       ├── config.ts            lê e valida env (porta, DADOS_DIR, REQUEST_STATE_SECRET ≥ 32 bytes, TTL)
@@ -702,3 +703,60 @@ $b = @{ jsonrpc='2.0'; id=2; method='resources/read'; params=@{ uri='politica://
 Ou pelo Inspector: `npx @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:7301/mcp --transport http --protocol-era modern --method resources/read --uri politica://uso`.
 
 Validador oficial com só o servidor MCP no ar: **7/36**. Passam 02 a 08. A 01 espera as três tools; as 09 a 20 dependem das regras, de `reservar_sala` e do MRTR; as 21 a 36 dependem do agente.
+
+### Passo 5: regras de negócio e `consultar_disponibilidade` (07/11/2026)
+
+| Item | Situação |
+|---|---|
+| `dominio/agenda.ts`: salas + reservas em memória (de `dados/reservas.json`) | ✅ |
+| `dominio/regras.ts`: sala, intervalo, janela, duração, conflito | ✅ |
+| `tools/consultar-disponibilidade.ts` | ✅ |
+| `test/regras.test.ts` (35 testes) + `test/contrato.test.ts` (33 testes) | ✅ `npm test`: 68/68 |
+| `reservar_sala`, alternativas, MRTR | ⏳ passos seguintes |
+
+**Representação.** `agenda.ts` carrega `salas.json` e `reservas.json` uma vez, valida com zod e guarda tudo em memória. As reservas são `{ id, sala, inicio, fim, responsavel }`, com `inicio` e `fim` guardados **como vieram** (ISO 8601 com offset), porque é assim que voltam nas respostas. `agenda.ts` não decide nada: ele expõe `buscarSala`, `listarSalas` e `reservasDaSala`. No Passo 6, `reservar_sala` acrescenta a escrita na mesma lista.
+
+**Regras (`regras.ts`, funções puras).** Cada regra é uma função isolada que devolve `{ ok: true, valor }` ou `{ ok: false, mensagem }`. Nenhuma lança exceção para erro de domínio. `validarPedido` as compõe em **ordem fixa** e para na primeira violação:
+
+| Ordem | Regra | Viola quando | Mensagem |
+|---|---|---|---|
+| 1 | `validarSala` | o id não está em `salas.json` | `Sala inexistente: <id exatamente como recebido>` |
+| 2 | `validarIntervalo` | `fim <= inicio` | `Intervalo invalido: fim deve ser posterior a inicio` |
+| 3 | `validarJanela` | início **ou** fim fora de [08:00, 20:00] em São Paulo | `Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00` |
+| 4 | `validarDuracao` | `fim − inicio > 2h` | `Duracao acima do limite: a politica permite no maximo 2 horas` |
+
+O validador e os exemplos de wire não impõem ordem: cada verificação (09 a 12) viola uma regra só. Escolhemos ir do pré-requisito mais básico ao mais específico, porque janela e duração só fazem sentido para um intervalo válido de uma sala que existe. Os testes `ordem das validações` fixam essa escolha.
+
+**Datas e fusos.**
+
+- Toda comparação usa **instantes** (`Date.parse` → milissegundos UTC), nunca strings. `"2026-11-03T17:00:00Z"` e `"2026-11-03T14:00:00-03:00"` são o mesmo instante, e a comparação de strings diria o contrário.
+- O `inputSchema` exige **offset explícito** (`z.iso.datetime({ offset: true })`, ou seja, `Z` ou `±HH:MM`). Sem offset, o `Date.parse` usaria o fuso da máquina. Uma data sem offset recebe `isError` do próprio SDK ("Input validation error"), antes de chegar à agenda.
+- A janela é avaliada convertendo o instante para **UTC−03:00 fixo** (`instante − 3h`, módulo 24h). O código nunca usa `getHours()` nem o fuso do processo. Um teste troca o `TZ` do processo entre cinco fusos, prova que a hora local mudou e confere que as regras deram sempre a mesma resposta.
+- Os limites são inclusivos: início às 08:00 e fim às 20:00 são aceitos, e 20:00:01 já não é. Como a duração máxima é 2h, um intervalo que atravesse a meia-noite sempre viola a janela ou a duração, então não existe regra separada de "mesmo dia".
+- Nenhuma regra usa a data de hoje. Datas passadas são aceitas.
+
+**Conflito.** Os intervalos são semiabertos, `[inicio, fim)`, e dois deles se sobrepõem quando `a.inicio < b.fim && a.fim > b.inicio`. Uma reserva que termina às 15:00 **não** conflita com outra que começa às 15:00. `conflitos(reservasDaSala(sala), intervalo)` só olha as reservas da sala pedida, devolve as conflitantes ordenadas por início e não altera a lista.
+
+**Contrato de `consultar_disponibilidade`** (o mesmo de `exemplos/wire/01`, `Disponibilidade` / `ConflitoOut`):
+
+- Entrada: `{ sala: string, inicio: string (date-time com offset), fim: string (date-time com offset) }`, os três obrigatórios.
+- Saída (`structuredContent`, com o mesmo JSON em texto): `{ sala, livre: boolean, conflitos: [{ id, inicio, fim, responsavel }] }`. Quando a sala está livre, `conflitos` vem vazio.
+- Pedido fora das regras: `resultType: complete`, `isError: true`, `content[0].text` = a mensagem exata, sem prefixo e sem `structuredContent`.
+
+**Erro de execução × erro de protocolo.**
+
+- **Protocolo:** o *request* está errado. Exemplos: `_meta` incompleto, header divergente, tool ou URI inexistente. Quem responde é o SDK, com `error` JSON-RPC (`-32602`, `-32020`), e a tool nem roda.
+- **Execução:** o request está certo, a tool rodou, mas o *domínio* recusou. A resposta é um `result` normal com `isError: true` e a mensagem para o usuário.
+
+No agente, o primeiro caso é um defeito de integração; o segundo vira `TASK_STATE_FAILED` com a mensagem da tool (verificação 35).
+
+**Reutilização por `reservar_sala` (Passo 6):** `validarPedido` (as quatro regras, na mesma ordem e com as mesmas mensagens), `conflitos` + `reservasDaSala` (para decidir entre reservar e pedir alternativas) e `agenda.ts`, que ganha a escrita. Nada disso precisa mudar de forma.
+
+**Testes.** `npm test` roda `node --import tsx --test test/*.test.ts`:
+
+- `regras.test.ts` testa as funções puras com dados montados no próprio teste: existência de sala, intervalo, limites da janela, duração, os oito casos de sobreposição, offsets equivalentes, independência do TZ e ordem das regras;
+- `contrato.test.ts` sobe o servidor real e cobre os cenários A a H do enunciado por HTTP.
+
+Testes de mutação manuais confirmaram que os testes pegam erros reais: trocar `<` por `<=` no conflito derrubou 3 testes, fechar a janela em `< 20:00` derrubou 2, e usar o fuso da máquina na janela derrubou 7.
+
+Validador oficial com só o servidor MCP no ar: **10/36**. Passam 02 a 08 e 10 a 12. A 01 espera `reservar_sala`; a 09 chama `reservar_sala` (a mesma regra já responde certo via `consultar_disponibilidade`); as 13 a 20 dependem de `reservar_sala` e do MRTR; as 21 a 36 dependem do agente.

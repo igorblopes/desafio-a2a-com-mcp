@@ -14,7 +14,7 @@ import {
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { criarServidor, registrarErroInterno } from './servidor.ts';
-import { listarSalas } from './dominio/agenda.ts';
+import { listarSalas, reservasIniciais } from './dominio/agenda.ts';
 import { cabecalhoDaPolitica } from './recursos/politica.ts';
 
 const handler = createMcpHandler(criarServidor, {
@@ -90,6 +90,7 @@ createServer((req, res) => {
   log('pronto', {
     url: `http://localhost:${config.porta}${config.caminho}`,
     salas: listarSalas().length,
+    reservas: reservasIniciais,
     politica: cabecalhoDaPolitica,
     protocolo: '2026-07-28',
   });

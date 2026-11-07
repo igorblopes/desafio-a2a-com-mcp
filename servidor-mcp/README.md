@@ -2,7 +2,7 @@
 
 Servidor MCP da Central de Salas: Streamable HTTP, revisão `2026-07-28`, sem sessão. Cada request carrega no `_meta` a própria versão e as próprias capabilities, e o servidor responde sempre em JSON (nunca SSE).
 
-> **Estado atual (Passo 4):** existem a tool `listar_salas` e o resource `politica://uso`. `consultar_disponibilidade`, `reservar_sala` e o MRTR entram nos próximos passos.
+> **Estado atual (Passo 5):** existem as tools `listar_salas` e `consultar_disponibilidade` e o resource `politica://uso`. `reservar_sala` e o MRTR entram nos próximos passos.
 
 ## Pré-requisito
 
@@ -22,14 +22,14 @@ Outros scripts:
 |---|---|
 | `npm run dev` | Sobe com `tsx watch`, reiniciando a cada alteração em `src/` |
 | `npm run check` | Checagem de tipos (`tsc --noEmit`), sem gerar arquivos |
-| `npm test` | Testes de contrato (`node:test`), sem precisar de servidor no ar |
+| `npm test` | Testes unitários das regras e testes de contrato (`node:test`), sem precisar de servidor no ar |
 
 ## Variáveis de ambiente
 
 | Variável | Padrão | Uso |
 |---|---|---|
 | `MCP_PORT` | `7301` | Porta HTTP |
-| `DADOS_DIR` | `../dados` (relativo a `servidor-mcp/`) | Pasta com `salas.json` e `politica-de-uso.md` |
+| `DADOS_DIR` | `../dados` (relativo a `servidor-mcp/`) | Pasta com `salas.json`, `reservas.json` e `politica-de-uso.md` |
 
 Exemplo, no PowerShell: `$env:MCP_PORT = '7401'; npm start`.
 
@@ -89,7 +89,7 @@ Uma linha por evento, prefixada por `[mcp]`:
 
 | Evento | Quando | Exemplo |
 |---|---|---|
-| `pronto` | O servidor subiu | `[mcp] pronto url=http://localhost:7301/mcp salas=5 protocolo=2026-07-28` |
+| `pronto` | O servidor subiu | `[mcp] pronto url=http://localhost:7301/mcp salas=5 reservas=2 politica="versao: 2026-11-01" protocolo=2026-07-28` |
 | `recv` | Todo request recebido, **antes** do SDK (inclusive os que serão rejeitados) | `[mcp] recv method=tools/call id=2 name=listar_salas traceparent=00-4bf9…-01` |
 | `rejeitado` | O SDK recusou o request por protocolo (`_meta` incompleto, header divergente…) | `[mcp] rejeitado tipo=Error mensagem="Rejected inbound request (envelope-invalid): …"` |
 | `erro` | Falha interna inesperada | `[mcp] erro tipo=… mensagem=…` |
@@ -111,9 +111,42 @@ Ele avisa que notificações enviadas no meio de uma chamada são descartadas no
 | `src/log.ts` | Log de uma linha no stderr |
 | `src/servidor.ts` | Factory do `McpServer` (uma instância por request, por isso stateless) e tratamento do `onerror` |
 | `src/tools/listar-salas.ts` | Tool `listar_salas`: `structuredContent` conforme o `outputSchema` e o mesmo JSON em texto |
-| `src/dominio/agenda.ts` | Carrega e valida `dados/salas.json` uma vez (singleton de módulo) |
+| `src/tools/consultar-disponibilidade.ts` | Tool `consultar_disponibilidade`: `{ sala, livre, conflitos }` ou `isError` com a mensagem da regra |
 | `src/recursos/politica.ts` | Resource `politica://uso`: lê `dados/politica-de-uso.md` uma vez e o serve sem transformação (`text/markdown`) |
+| `src/dominio/agenda.ts` | Carrega e valida `dados/salas.json` e `dados/reservas.json` uma vez; guarda as reservas em memória |
+| `src/dominio/regras.ts` | Regras de negócio puras: sala, intervalo, janela 08:00–20:00 (UTC−03:00), duração ≤ 2h e conflito `[inicio, fim)`, com as mensagens exatas |
+| `test/regras.test.ts` | Testes unitários das regras |
 | `test/contrato.test.ts` | Testes de contrato (`npm test`): sobe o servidor numa porta livre e faz requests HTTP reais |
+
+## consultar_disponibilidade (Passo 5)
+
+Recebe `sala`, `inicio` e `fim`, com as datas em ISO 8601 **com offset** (`-03:00` ou `Z`), e responde `{ sala, livre, conflitos }` em `structuredContent` e o mesmo JSON em texto. A consulta não altera a agenda. Um pedido que viola uma regra (sala inexistente, janela de 08:00 a 20:00, duração acima de 2h, fim não posterior ao início) volta em HTTP 200 como resultado normal, com `isError: true` e a mensagem exata em `content[0].text`. Data sem offset é recusada pelo `inputSchema`.
+
+Os exemplos reaproveitam o `$url` e o `$meta` definidos em "Exemplos de request" acima.
+
+```powershell
+function Consultar($sala, $inicio, $fim) {
+  $corpo = @{ jsonrpc = '2.0'; id = 20; method = 'tools/call'
+              params = @{ name = 'consultar_disponibilidade'; arguments = @{ sala = $sala; inicio = $inicio; fim = $fim }; _meta = $meta } } |
+           ConvertTo-Json -Depth 10
+  $h = @{ 'Accept' = 'application/json, text/event-stream'; 'MCP-Protocol-Version' = '2026-07-28'
+          'Mcp-Method' = 'tools/call'; 'Mcp-Name' = 'consultar_disponibilidade' }
+  (Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Headers $h -Body $corpo).result
+}
+
+# sala livre
+(Consultar 'sala-aquario' '2026-11-03T09:00:00-03:00' '2026-11-03T10:00:00-03:00').structuredContent | ConvertTo-Json -Compress
+# {"sala":"sala-aquario","livre":true,"conflitos":[]}
+
+# sala ocupada (res-0001, de dados/reservas.json)
+(Consultar 'sala-garagem' '2026-11-03T14:00:00-03:00' '2026-11-03T15:00:00-03:00').structuredContent | ConvertTo-Json -Compress -Depth 5
+# {"sala":"sala-garagem","livre":false,"conflitos":[{"id":"res-0001","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"}]}
+
+# regra violada: erro de execução (isError), não erro JSON-RPC
+$r = Consultar 'sala-inexistente' '2026-11-03T09:00:00-03:00' '2026-11-03T10:00:00-03:00'
+"isError=$($r.isError) texto=$($r.content[0].text)"
+# isError=True texto=Sala inexistente: sala-inexistente
+```
 
 ## Resources (Passo 4)
 
@@ -154,4 +187,4 @@ No PowerShell 5.1, textos com acento nas respostas (como o `title` "Política de
 npm test
 ```
 
-Os testes sobem o próprio servidor numa porta livre e fazem requests HTTP reais, iguais aos do validador. Não é preciso ter outro servidor no ar. Eles cobrem `tools/list`, `listar_salas`, `resources/list`, `resources/read`, a URI inexistente, o `_meta` obrigatório, a consistência dos headers e os logs no stderr.
+Dois arquivos, executados juntos pelo `node:test`, sem precisar de servidor no ar. `test/regras.test.ts` testa as regras de negócio como funções puras: sala, intervalo, janela, duração, sobreposição, offsets e independência do fuso da máquina. `test/contrato.test.ts` sobe o próprio servidor numa porta livre e faz requests HTTP reais, iguais aos do validador: `tools/list`, `listar_salas`, `consultar_disponibilidade` (livre, ocupada e os quatro erros de execução), `resources/list`, `resources/read`, URI inexistente, `_meta` obrigatório, consistência dos headers e logs no stderr.

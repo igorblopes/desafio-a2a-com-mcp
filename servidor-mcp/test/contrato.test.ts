@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dados = path.resolve(raiz, '..', 'dados');
 const SALAS = JSON.parse(readFileSync(path.join(dados, 'salas.json'), 'utf8'));
+const RESERVAS = JSON.parse(readFileSync(path.join(dados, 'reservas.json'), 'utf8'));
 const POLITICA = readFileSync(path.join(dados, 'politica-de-uso.md'), 'utf8');
 const PROTOCOLO = '2026-07-28';
 const TRACEPARENT = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
@@ -152,6 +153,91 @@ test('tool inexistente é recusada com -32602', async () => {
   assert.equal(corpo.result, undefined);
 });
 
+// ---------- consultar_disponibilidade ----------
+
+const DIA = (hora: string) => `2026-11-03T${hora}:00-03:00`;
+
+async function consultar(sala: string, inicio: string, fim: string, op: Opcoes = {}) {
+  return mcp('tools/call', { name: 'consultar_disponibilidade', arguments: { sala, inicio, fim } }, { nome: 'consultar_disponibilidade', ...op });
+}
+
+test('tools/list descobre consultar_disponibilidade com sala, inicio e fim obrigatórios', async () => {
+  const { corpo } = await mcp('tools/list');
+  const tool = corpo.result.tools.find((t: any) => t.name === 'consultar_disponibilidade');
+  assert.ok(tool, 'consultar_disponibilidade ausente');
+  assert.equal(tool.inputSchema.type, 'object');
+  assert.deepEqual([...tool.inputSchema.required].sort(), ['fim', 'inicio', 'sala']);
+  for (const campo of ['sala', 'inicio', 'fim']) assert.equal(tool.inputSchema.properties[campo].type, 'string');
+  const out = tool.outputSchema;
+  assert.deepEqual([...out.required].sort(), ['conflitos', 'livre', 'sala']);
+  assert.equal(out.properties.livre.type, 'boolean');
+  assert.deepEqual([...out.properties.conflitos.items.required].sort(), ['fim', 'id', 'inicio', 'responsavel']);
+});
+
+test('A: sala livre → livre: true, sem conflitos, texto igual ao structuredContent', async () => {
+  const { status, corpo } = await consultar('sala-aquario', DIA('09:00'), DIA('10:00'));
+  assert.equal(status, 200);
+  const r = corpo.result;
+  assert.equal(r.resultType, 'complete');
+  assert.notEqual(r.isError, true);
+  assert.deepEqual(r.structuredContent, { sala: 'sala-aquario', livre: true, conflitos: [] });
+  assert.deepEqual(JSON.parse(r.content[0].text), r.structuredContent);
+});
+
+test('B: sala-garagem 14:00–15:00 → ocupada, com res-0001 (como em dados/reservas.json)', async () => {
+  const { corpo } = await consultar('sala-garagem', DIA('14:00'), DIA('15:00'));
+  const r = corpo.result;
+  assert.notEqual(r.isError, true);
+  assert.deepEqual(r.structuredContent, {
+    sala: 'sala-garagem',
+    livre: false,
+    conflitos: [RESERVAS.find((x: any) => x.id === 'res-0001')].map(({ id, inicio, fim, responsavel }: any) => ({ id, inicio, fim, responsavel })),
+  });
+  assert.deepEqual(JSON.parse(r.content[0].text), r.structuredContent);
+});
+
+test('B: adjacente (15:00–16:00) e a mesma hora em outra sala ficam livres', async () => {
+  assert.equal((await consultar('sala-garagem', DIA('15:00'), DIA('16:00'))).corpo.result.structuredContent.livre, true);
+  assert.equal((await consultar('sala-porao', DIA('14:00'), DIA('15:00'))).corpo.result.structuredContent.livre, true);
+});
+
+test('B: o mesmo instante em UTC também conflita', async () => {
+  const { corpo } = await consultar('sala-garagem', '2026-11-03T17:30:00Z', '2026-11-03T18:30:00Z');
+  assert.equal(corpo.result.structuredContent.livre, false);
+});
+
+const ERROS: Array<[string, string, string, string, string]> = [
+  ['C: sala inexistente', 'sala-inexistente', DIA('09:00'), DIA('10:00'), 'Sala inexistente: sala-inexistente'],
+  ['D: antes das 08:00', 'sala-aquario', DIA('07:00'), DIA('08:00'), 'Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00'],
+  ['D: depois das 20:00', 'sala-aquario', DIA('19:30'), DIA('20:30'), 'Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00'],
+  ['E: mais de 2h', 'sala-aquario', DIA('09:00'), DIA('12:00'), 'Duracao acima do limite: a politica permite no maximo 2 horas'],
+  ['F: fim antes do início', 'sala-aquario', DIA('10:00'), DIA('09:00'), 'Intervalo invalido: fim deve ser posterior a inicio'],
+  ['F: fim igual ao início', 'sala-aquario', DIA('10:00'), DIA('10:00'), 'Intervalo invalido: fim deve ser posterior a inicio'],
+];
+for (const [nome, sala, inicio, fim, mensagem] of ERROS) {
+  test(`${nome} → isError: true com a mensagem exata (erro de execução, não de protocolo)`, async () => {
+    const { status, corpo } = await consultar(sala, inicio, fim);
+    assert.equal(status, 200);
+    assert.equal(corpo.error, undefined);
+    assert.equal(corpo.result.resultType, 'complete');
+    assert.equal(corpo.result.isError, true);
+    assert.equal(corpo.result.content[0].text, mensagem);
+    assert.equal(corpo.result.structuredContent, undefined);
+  });
+}
+
+test('data sem offset é recusada pelo inputSchema (isError, sem consultar a agenda)', async () => {
+  const { corpo } = await consultar('sala-aquario', '2026-11-03T09:00:00', '2026-11-03T10:00:00');
+  assert.equal(corpo.result.isError, true);
+  assert.match(corpo.result.content[0].text, /Input validation error/);
+});
+
+test('G: consultar_disponibilidade sem clientCapabilities → HTTP 400 e -32602', async () => {
+  const { status, corpo } = await consultar('sala-aquario', DIA('09:00'), DIA('10:00'), { omitir: 'clientCapabilities' });
+  assert.equal(status, 400);
+  assert.equal(corpo.error?.code, -32602);
+});
+
 // ---------- resources ----------
 
 test('resources/list descobre politica://uso com nome e mimeType', async () => {
@@ -229,6 +315,7 @@ test('stderr registra método, id e traceparent de cada operação', async () =>
     ['tools/call', { name: 'listar_salas', arguments: {} }, 'listar_salas'],
     ['resources/list', {}],
     ['resources/read', { uri: 'politica://uso' }, 'politica://uso'],
+    ['tools/call', { name: 'consultar_disponibilidade', arguments: { sala: 'sala-garagem', inicio: DIA('14:00'), fim: DIA('15:00') } }, 'consultar_disponibilidade'],
   ];
   for (const [metodo, params, nome] of chamadas) {
     const { id } = await mcp(metodo, params, { nome, traceparent: TRACEPARENT });

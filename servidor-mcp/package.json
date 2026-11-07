@@ -11,7 +11,7 @@
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test test/contrato.test.ts"
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",
