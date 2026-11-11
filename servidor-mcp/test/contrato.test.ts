@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,8 @@ const RESERVAS = JSON.parse(readFileSync(path.join(dados, 'reservas.json'), 'utf
 const POLITICA = readFileSync(path.join(dados, 'politica-de-uso.md'), 'utf8');
 const PROTOCOLO = '2026-07-28';
 const TRACEPARENT = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
+// Segredo só desta execução de teste: nunca um valor fixo no repositório.
+const SEGREDO = randomBytes(32).toString('hex');
 
 let processo: ChildProcess;
 let url = '';
@@ -39,7 +42,7 @@ async function subirServidor(env: Record<string, string> = {}) {
   const porta = await portaLivre();
   const filho = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
     cwd: raiz,
-    env: { ...process.env, MCP_PORT: String(porta), ...env },
+    env: { ...process.env, MCP_PORT: String(porta), REQUEST_STATE_SECRET: SEGREDO, ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   const saida = { texto: '' };
@@ -333,17 +336,7 @@ for (const [nome, sala, inicio, fim, mensagem] of ERROS_RESERVA) {
   });
 }
 
-test('I (PROVISÓRIO até o Passo 7): conflito não cria reserva nem corrompe a agenda', async () => {
-  // Isto NÃO é o comportamento final: no Passo 7 o conflito vira input_required (MRTR).
-  const antes = (await consultar('sala-garagem', '2026-11-03T13:00:00-03:00', '2026-11-03T15:00:00-03:00')).corpo.result.structuredContent;
-  const { corpo } = await reservar('sala-garagem', '2026-11-03T14:00:00-03:00', '2026-11-03T15:00:00-03:00', 'Biff');
-  assert.equal(corpo.result.isError, true);
-  assert.match(corpo.result.content[0].text, /provisorio/);
-  assert.notEqual(corpo.result.resultType, 'input_required');
-  assert.equal(corpo.result.requestState, undefined);
-  const depois = (await consultar('sala-garagem', '2026-11-03T13:00:00-03:00', '2026-11-03T15:00:00-03:00')).corpo.result.structuredContent;
-  assert.deepEqual(depois, antes);
-});
+// O cenário I (conflito) agora é MRTR e é coberto em test/mrtr.test.ts.
 
 test('J: reservar_sala sem protocolVersion → HTTP 400 e -32602; Mcp-Name divergente → -32020', async () => {
   const a = await reservar('sala-aquario', DIA4('15:00'), DIA4('16:00'), 'Doc', { omitir: 'protocolVersion' });

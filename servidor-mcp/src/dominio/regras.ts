@@ -12,6 +12,7 @@ export const MENSAGENS = {
   intervaloInvalido: 'Intervalo invalido: fim deve ser posterior a inicio',
   foraDaJanela: 'Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00',
   duracaoAcima: 'Duracao acima do limite: a politica permite no maximo 2 horas',
+  semAlternativas: 'Sem alternativas disponiveis no intervalo',
 } as const;
 
 const MINUTO = 60_000;
@@ -115,4 +116,32 @@ export function validarPedido(salas: readonly Sala[], salaId: string, inicioIso:
     if (!d.ok) return d;
   }
   return { ok: true, valor: { sala: sala.valor, intervalo } };
+}
+
+// ---------- alternativas (MRTR, Passo 7) ----------
+
+/** Quantas alternativas, no máximo, a elicitation oferece. */
+export const MAX_ALTERNATIVAS = 3;
+
+/**
+ * Salas que podem substituir `pedida` no MESMO intervalo:
+ *   - diferente da sala pedida;
+ *   - capacidade >= a da sala pedida (ninguém troca por uma sala menor);
+ *   - sem conflito no intervalo, olhando a agenda atual (`reservasDe`).
+ * Ordem: capacidade crescente (a menor sala que serve vem primeiro) e, no
+ * empate, id em ordem de código (comparação de strings simples, sem locale,
+ * para o resultado não depender da máquina). No máximo MAX_ALTERNATIVAS.
+ */
+export function alternativas(
+  salas: readonly Sala[],
+  reservasDe: (salaId: string) => readonly Reserva[],
+  pedida: Sala,
+  intervalo: Intervalo,
+  limite = MAX_ALTERNATIVAS,
+): Sala[] {
+  return salas
+    .filter((s) => s.id !== pedida.id && s.capacidade >= pedida.capacidade)
+    .filter((s) => conflitos(reservasDe(s.id), intervalo).length === 0)
+    .sort((a, b) => a.capacidade - b.capacidade || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .slice(0, limite);
 }

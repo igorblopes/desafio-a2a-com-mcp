@@ -5,7 +5,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Reserva, Sala } from '../src/dominio/agenda.ts';
 import {
+  MAX_ALTERNATIVAS,
   MENSAGENS,
+  alternativas,
   conflitos,
   instante,
   sobrepoe,
@@ -167,5 +169,50 @@ describe('ordem das validações (para na primeira violação)', () => {
     assert.ok(d.ok);
     assert.equal(d.valor.sala.id, 'sala-garagem');
     assert.deepEqual(d.valor.intervalo, intervalo('09:00', '11:00'));
+  });
+});
+
+describe('alternativas (MRTR)', () => {
+  // As 5 salas reais do starter, montadas aqui para o teste ser autoexplicativo.
+  const CINCO: Sala[] = [
+    { id: 'sala-aquario', nome: 'Aquario', capacidade: 4, recursos: [] },
+    { id: 'sala-porao', nome: 'Porao', capacidade: 6, recursos: [] },
+    { id: 'sala-garagem', nome: 'Garagem', capacidade: 12, recursos: [] },
+    { id: 'sala-fusca', nome: 'Fusca', capacidade: 12, recursos: [] },
+    { id: 'sala-mirante', nome: 'Mirante', capacidade: 20, recursos: [] },
+  ];
+  const sala = (id: string) => CINCO.find((s) => s.id === id)!;
+  const ocupadas = (...ids: string[]) => (salaId: string): Reserva[] =>
+    ids.includes(salaId) ? [{ id: `res-${salaId}`, sala: salaId, inicio: em('14:00'), fim: em('15:00'), responsavel: 'X' }] : [];
+  const ids = (salas: Sala[]) => salas.map((s) => s.id);
+  const i = intervalo('14:00', '15:00');
+
+  test('exemplo do enunciado: garagem ocupada → fusca, mirante (capacidade, depois id)', () => {
+    assert.deepEqual(ids(alternativas(CINCO, ocupadas('sala-garagem'), sala('sala-garagem'), i)), ['sala-fusca', 'sala-mirante']);
+  });
+  test('exclui salas menores que a pedida e a própria sala pedida', () => {
+    const r = ids(alternativas(CINCO, ocupadas('sala-porao'), sala('sala-porao'), i));
+    assert.ok(!r.includes('sala-aquario'), 'aquario (4) é menor que porao (6)');
+    assert.ok(!r.includes('sala-porao'));
+  });
+  test('exclui salas ocupadas no intervalo, mas não as ocupadas em outro horário', () => {
+    assert.deepEqual(ids(alternativas(CINCO, ocupadas('sala-garagem', 'sala-fusca'), sala('sala-garagem'), i)), ['sala-mirante']);
+    assert.deepEqual(
+      ids(alternativas(CINCO, ocupadas('sala-garagem', 'sala-fusca'), sala('sala-garagem'), intervalo('15:00', '16:00'))),
+      ['sala-fusca', 'sala-mirante'],
+    );
+  });
+  test('ordena por capacidade e desempata por id; no máximo 3', () => {
+    assert.equal(MAX_ALTERNATIVAS, 3);
+    // aquario ocupado: porao (6), fusca (12), garagem (12), mirante (20) → corta mirante
+    assert.deepEqual(ids(alternativas(CINCO, ocupadas('sala-aquario'), sala('sala-aquario'), i)), ['sala-porao', 'sala-fusca', 'sala-garagem']);
+  });
+  test('a ordem não depende da ordem do arquivo', () => {
+    const embaralhadas = [CINCO[4], CINCO[2], CINCO[0], CINCO[3], CINCO[1]];
+    assert.deepEqual(ids(alternativas(embaralhadas, ocupadas('sala-aquario'), sala('sala-aquario'), i)), ['sala-porao', 'sala-fusca', 'sala-garagem']);
+  });
+  test('sem alternativa possível → lista vazia (a maior sala ocupada)', () => {
+    assert.deepEqual(alternativas(CINCO, ocupadas('sala-mirante'), sala('sala-mirante'), i), []);
+    assert.equal(MENSAGENS.semAlternativas, 'Sem alternativas disponiveis no intervalo');
   });
 });

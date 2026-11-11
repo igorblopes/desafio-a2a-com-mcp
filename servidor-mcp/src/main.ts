@@ -11,11 +11,15 @@ import {
   hostHeaderValidationResponse,
   localhostAllowedHostnames,
 } from '@modelcontextprotocol/server';
-import { config } from './config.ts';
+import { config, segredoDoRequestState } from './config.ts';
 import { log } from './log.ts';
 import { criarServidor, registrarErroInterno } from './servidor.ts';
 import { listarSalas, reservasIniciais } from './dominio/agenda.ts';
 import { cabecalhoDaPolitica } from './recursos/politica.ts';
+
+// Sem REQUEST_STATE_SECRET válida o processo nem sobe: melhor falhar aqui do
+// que no primeiro conflito. (A mensagem de erro nunca contém o valor.)
+segredoDoRequestState();
 
 const handler = createMcpHandler(criarServidor, {
   legacy: 'reject', // só a revisão 2026-07-28 (nada de initialize/sessão)
@@ -93,5 +97,6 @@ createServer((req, res) => {
     reservas: reservasIniciais,
     politica: cabecalhoDaPolitica,
     protocolo: '2026-07-28',
+    requestStateTtl: config.ttlDoRequestState,
   });
 });

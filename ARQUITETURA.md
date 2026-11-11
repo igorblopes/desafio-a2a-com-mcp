@@ -145,7 +145,9 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │   ├── test/
 │   │   ├── contrato.test.ts     testes de contrato: sobe o processo real e conversa por HTTP (node:test)
 │   │   ├── regras.test.ts       testes unitários das regras de domínio (funções puras)
-│   │   └── agenda.test.ts       testes unitários da agenda em memória, dos ids e da versão da política
+│   │   ├── agenda.test.ts       testes unitários da agenda em memória, dos ids e da versão da política
+│   │   ├── estado-mrtr.test.ts  testes unitários do requestState (MAC, expiração com relógio simulado) e do segredo
+│   │   └── mrtr.test.ts         MRTR por HTTP contra o processo real, incluindo restart
 │   └── src/
 │       ├── main.ts              sobe node:http na 7301, loga cada request no stderr, delega a handler.fetch
 │       ├── config.ts            lê e valida env (porta, DADOS_DIR, REQUEST_STATE_SECRET ≥ 32 bytes, TTL)
@@ -310,19 +312,22 @@ Um ajuste em relação ao seu rascunho: a recusa também passa por `WORKING`, po
 | Onde vive | memória do agente | **dentro da mensagem**, entre um request e o próximo |
 | Conteúdo | identidade, estado, histórico, artifact, contexto de retomada | o pedido original selado: argumentos, alternativas calculadas, chave |
 | Integridade | não precisa: nunca sai do agente | HMAC-SHA256 com `REQUEST_STATE_SECRET`; adulterado → `-32602` |
-| Validade | até terminar ou o processo cair | TTL de 10 min (dentro de 5–30); expirado → `-32602` |
+| Validade | até terminar ou o processo cair | TTL de 15 min (dentro de 5–30); expirado → `-32602` |
 | Sobrevive a restart | do agente: não (não exigido) | do MCP: **sim**, porque a chave vem do ambiente e o estado viaja no token |
 | Quem pode ler | agente e cliente A2A (o que é público) | só o servidor. Para o agente é **opaco**: guarda e ecoa, nunca decodifica, mesmo sendo base64 legível |
 
-### 8.2 Payload selado (planejado)
+### 8.2 Payload selado (implementado no Passo 7, `src/estado-mrtr.ts`)
 
 ```ts
 SeloReserva = {
-  v: 1,
-  args: { sala, inicio, fim, responsavel },  // o pedido original: fonte da verdade no retry
-  alternativas: string[],                     // o enum oferecido: valida a escolha recebida
+  v: 1,                                        // versão do formato do selo
+  ferramenta: 'reservar_sala',                 // um selo de reservar_sala só serve para ela
+  pedido: { sala, inicio, fim, responsavel },  // o pedido original: fonte da verdade no retry
+  alternativas: string[],                      // o enum oferecido: valida a escolha recebida
+  chave: 'escolha_de_sala',                    // a chave de inputRequests esperada em inputResponses
+  emitidoEm: number,                           // unix s
 }
-// o exp é colocado pelo codec (ttlSeconds)
+// o exp é colocado pelo codec (ttlSeconds); o verify também confere a forma (zod, .strict())
 ```
 
 No retry, o handler usa `ctx.mcpReq.requestState<SeloReserva>()`, já verificado pelo SDK, e **ignora** `params.arguments` (verificação 18). A escolha em `inputResponses` também é entrada não confiável: o servidor confere se ela está em `selo.alternativas` antes de reservar.
@@ -482,15 +487,15 @@ Formato de log planejado (uma linha por evento, stderr):
 
 ```
 [mcp] recv method=tools/call id=4 name=reservar_sala traceparent=00-4bf9…-a1b2…-01
-[mcp] mrtr input_required id=3 chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
-[mcp] mrtr retry id=4 requestState=ok escolha=sala-fusca
-[mcp] mrtr retry id=9 requestState=rejeitado motivo=mac
+[mcp] mrtr evento=conflito id=3 chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
+[mcp] mrtr evento=retry id=4 resultado=accept escolha=sala-fusca
+[mcp] rejeitado tipo=Error mensagem="requestState verification rejected tools/call: mac"
 [agente] task=3c3a… SUBMITTED→WORKING traceId=4bf9…
 [agente] task=3c3a… mcp tools/call id=3 → input_required
 [agente] task=3c3a… WORKING→INPUT_REQUIRED
 ```
 
-O log do servidor é feito **na borda HTTP**, em `main.ts`, antes do SDK: o corpo é lido, logado e repassado para `handler.fetch(new Request(...))`. Assim até os requests rejeitados pelo SDK (`-32602`/`-32020`) aparecem no log. Nunca logamos `REQUEST_STATE_SECRET` nem o `requestState` inteiro: no máximo os 12 primeiros caracteres.
+O log do servidor é feito **na borda HTTP**, em `main.ts`, antes do SDK: o corpo é lido, logado e repassado para `handler.fetch(new Request(...))`. Assim até os requests rejeitados pelo SDK (`-32602`/`-32020`) aparecem no log. Nunca logamos `REQUEST_STATE_SECRET` nem o `requestState` (nem um pedaço dele): do retry só aparecem o id, o resultado e a escolha, e de uma recusa só o código opaco do codec (`mac`, `expired`, `malformed`).
 
 ---
 
@@ -502,8 +507,8 @@ O log do servidor é feito **na borda HTTP**, em `main.ts`, antes do SDK: o corp
 |---|---|---|---|
 | `MCP_PORT` | servidor-mcp | `7301` | não |
 | `DADOS_DIR` | servidor-mcp | `../dados` (relativo ao pacote) | não |
-| `REQUEST_STATE_SECRET` | servidor-mcp | — | **sim**: o processo **não sobe** sem ela ou com menos de 32 bytes |
-| `REQUEST_STATE_TTL_SECONDS` | servidor-mcp | `600` | não (validado entre 300 e 1800) |
+| `REQUEST_STATE_SECRET` | servidor-mcp | — | **sim**: hex com ≥ 64 dígitos (32 bytes); o processo **não sobe** sem ela |
+| `REQUEST_STATE_TTL_SECONDS` | servidor-mcp | `900` (15 min) | não (validado entre 300 e 1800) |
 | `AGENTE_PORT` | agente | `7300` | não |
 | `MCP_URL` | agente | `http://localhost:7301/mcp` | não |
 | `A2A_PUBLIC_URL` | agente | `http://localhost:7300/a2a` | não (vai no card) |
@@ -579,7 +584,7 @@ O equivalente em bash usa `export REQUEST_STATE_SECRET=...`. A ordem de subida n
 | R2 | Middleware `A2A-Version` esquecido → `-32009` em todas as chamadas A2A | Primeira coisa do passo do agente; teste com `curl` sem o header |
 | R3 | Acesso ao header `traceparent` dentro do executor (o `ServerCallContext` do SDK não o expôs no spike) | `AsyncLocalStorage` preenchido por middleware express; confirmar no passo do agente |
 | R4 | Agenda recriada a cada request (factory) | Singleton de módulo; teste: reservar e consultar em seguida |
-| R5 | Escolha válida, mas a sala foi ocupada entre a pausa e o retry | Servidor revalida a disponibilidade no retry. A resposta exata (novo `input_required` ou erro) fica para o passo do MRTR; o validador não exercita esse caso |
+| R5 | Escolha válida, mas a sala foi ocupada entre a pausa e o retry | Servidor revalida a disponibilidade no retry e, se a escolhida foi ocupada, devolve um **novo** `input_required` com as alternativas que sobraram (ou "Sem alternativas..."). Resolvido no Passo 7, com teste |
 | R6 | MCP fora do ar durante uma Task | A Task vai para `FAILED` com mensagem clara; não é exigido |
 | R7 | Windows: `localhost` resolvendo `::1` vs `127.0.0.1` | `listen()` sem host (dual-stack) nos dois processos |
 | R8 | Validador rodado duas vezes sem reiniciar → falsos negativos | Documentar no README; reiniciar sempre |
@@ -815,3 +820,118 @@ Mutações manuais (feitas no ambiente de nuvem) derrubaram testes como esperado
 **Validador.** O validador altera a agenda: hoje a verificação 20 cria uma reserva (a partir do Passo 7, a 18 também), de modo que só a primeira execução numa instância recém-iniciada parte dos dados originais. Numa instância nova: **12/36**. Passam 01 a 12. As 13 a 20 dependem do MRTR e as 21 a 36 do agente. Uma segunda execução sobre o mesmo processo também dá 12/36 (conferido no ambiente de nuvem).
 
 **Comandos.** `npm start`, `npm test` e `python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301` (com o servidor recém-iniciado).
+
+### Passo 7: MRTR em `reservar_sala` (11/11/2026)
+
+| Item | Situação |
+|---|---|
+| `dominio/regras.ts`: `alternativas()` e a mensagem `semAlternativas` | ✅ |
+| `estado-mrtr.ts`: selo, `selar()` e `verificarSelo()` sobre `createRequestStateCodec` do SDK | ✅ |
+| `config.ts`: `REQUEST_STATE_SECRET` (obrigatória) e `REQUEST_STATE_TTL_SECONDS` (900) | ✅ |
+| `servidor.ts`: `requestState.verify` e `onerror` do protocolo no log | ✅ |
+| `tools/reservar-sala.ts`: conflito → `input_required`; retry accept/decline/cancel | ✅ (a resposta provisória do Passo 6 saiu) |
+| `test/regras.test.ts` (41) + `agenda.test.ts` (14) + `estado-mrtr.test.ts` (10) + `contrato.test.ts` (43) + `mrtr.test.ts` (27) | ✅ `npm test`: 135/135 |
+| Validador, instância nova, só o MCP no ar | ✅ 20/36: passam 01 a 20 (todas as de MCP/MRTR); 21 a 36 são do agente |
+
+**O que é MRTR.** *Multi round-trip request*: quando a tool precisa de algo do usuário no meio da execução, ela **termina** o request atual devolvendo `resultType: "input_required"`, com o que precisa perguntar (`inputRequests`) e um estado opaco (`requestState`). O cliente pergunta ao usuário quando quiser (segundos ou minutos depois) e repete o **mesmo** `tools/call`, num request **novo** (id JSON-RPC novo), levando `inputResponses` e o `requestState` ecoado. Nenhuma conexão fica aberta esperando.
+
+**Elicitation síncrona × `input_required`.** Na revisão 2025, o servidor mandava um request `elicitation/create` para o cliente **no meio** do `tools/call` e ficava bloqueado esperando a resposta: precisava de canal bidirecional (SSE) e de sessão, porque a resposta tinha de voltar ao mesmo processo. Na 2026-07-28, a pergunta vai **dentro do resultado** e a resposta vem **dentro do próximo request**. No SDK, `ctx.mcpReq.elicitInput()` lança erro numa requisição 2026; usamos `return inputRequired(...)`.
+
+```mermaid
+flowchart TD
+    A[Cliente MCP] -->|tools/call| B[Servidor MCP]
+    B -->|conflito| C[input_required + requestState]
+    C -->|cliente escolhe| D[Novo tools/call]
+    D -->|inputResponses + requestState| E[Servidor MCP]
+    E -->|validação e reserva| F[complete]
+```
+
+Em detalhe, com os ids JSON-RPC:
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente MCP
+    participant S as Servidor MCP
+    C->>S: tools/call reservar_sala (id=3)
+    Note over S: validarPedido ok<br/>conflito na sala pedida<br/>alternativas = [fusca, mirante]<br/>selar(pedido + alternativas)
+    S-->>C: resultType input_required<br/>inputRequests {escolha_de_sala: elicitation form}<br/>requestState v1.(selo).(mac)
+    Note over C,S: request 3 terminou: nada fica aberto,<br/>nada fica guardado no servidor
+    Note over C: usuário escolhe sala-fusca
+    C->>S: tools/call reservar_sala (id=4, NOVO)<br/>inputResponses {escolha_de_sala: accept sala-fusca}<br/>requestState (ecoado)
+    Note over S: SDK: verify (MAC, validade, forma) ou -32602<br/>handler: pedido = selo.pedido<br/>escolha ∈ selo.alternativas<br/>fusca ainda livre → grava
+    S-->>C: resultType complete, reservado true, sala-fusca
+```
+
+**Alternativas.** `alternativas(salas, reservasDe, pedida, intervalo)` em `regras.ts`, função pura: salas diferentes da pedida, com capacidade **≥** a da pedida e sem conflito no **mesmo** intervalo (a mesma `conflitos()` de sempre), ordenadas por capacidade crescente e, no empate, por id (comparação de strings simples, sem locale), cortadas em 3. Para garagem 14–15 do dia 03: `[sala-fusca, sala-mirante]`. Lista vazia → `isError` com `Sem alternativas disponiveis no intervalo`, sem elicitation e sem `requestState`. As regras do pedido (sala, intervalo, janela, duração) continuam vindo **antes** do conflito.
+
+**`inputRequests`.** Um mapa com uma entrada só:
+
+```json
+{ "escolha_de_sala": { "method": "elicitation/create", "params": {
+    "mode": "form",
+    "message": "A sala pedida esta ocupada nesse intervalo. Escolha uma alternativa.",
+    "requestedSchema": { "type": "object", "required": ["sala"], "properties": {
+      "sala": { "type": "string", "title": "Sala", "description": "Sala alternativa escolhida", "enum": ["sala-fusca", "sala-mirante"] } } } } } }
+```
+
+Schema plano (só primitivos), `enum` na ordem calculada, também quando há uma alternativa só (o validador aceita `enum` ou `const`). A chave é do servidor: o SDK TypeScript **não gera** chaves (o mapa é montado pelo handler), por isso ela é a constante `escolha_de_sala`, que também vai no selo. O SDK Python gera `__main__:escolha_de_sala` a partir do nome do resolver; um cliente correto lê a chave da resposta e não presume nenhuma das duas.
+
+**Proteção do `requestState`.** `createRequestStateCodec` do SDK: HMAC-SHA256 com a chave de `REQUEST_STATE_SECRET`, formato `v1.<base64url({p: selo, exp})>.<base64url(mac)>`, verificação em tempo constante. Ligado em `ServerOptions.requestState.verify`: o SDK roda o verify **antes** do handler, e qualquer falha (MAC, expirado, malformado, selo fora do schema, outra versão ou outra ferramenta) vira `-32602 "Invalid or expired requestState"`. O handler recebe o selo já verificado em `ctx.mcpReq.requestState()`. É **assinado, não cifrado**: o cliente consegue ler o selo (base64url), mas não alterá-lo. Não há nada secreto no selo, por isso integridade basta e confidencialidade (AEAD) não é necessária.
+
+**Validade.** 15 minutos (`REQUEST_STATE_TTL_SECONDS=900`, aceito entre 300 e 1800). O `exp` está dentro da parte assinada, então não dá para "esticar". Testado sem esperar: no unitário, com o relógio do `node:test` simulado (válido aos 899 s, recusado aos 902 s); por HTTP, com um estado emitido com a mesma chave e validade vencida.
+
+**`REQUEST_STATE_SECRET`.** Hex com pelo menos 64 dígitos (32 bytes aleatórios, o mínimo do SDK). O processo **não sobe** sem ela, e a mensagem de erro diz o tamanho recebido, nunca o valor. Não aparece em log nem em resposta. Para gerar e guardar (uma vez), em `servidor-mcp/.env`, que o `.gitignore` já ignora:
+
+```powershell
+cd servidor-mcp
+python -c "import secrets, pathlib; pathlib.Path('.env').write_text('REQUEST_STATE_SECRET=' + secrets.token_hex(32) + '\n')"
+npm start   # tsx --env-file-if-exists=.env: lê o .env; uma variável já definida no ambiente prevalece
+```
+
+O arquivo é escrito pelo próprio Python porque o `>` do PowerShell 5.1 grava em UTF-16, que o Node não lê como `.env`. No bash, troque `python` por `python3`.
+
+Também dá para só exportar na sessão (`$env:REQUEST_STATE_SECRET = ...` / `export REQUEST_STATE_SECRET=...`), mas aí cada terminal novo precisa do **mesmo** valor, senão os estados emitidos antes ficam inválidos.
+
+**Restart.** O servidor não guarda nada sobre o pedido pendente: o selo carrega pedido, alternativas e chave, e o verify só precisa da chave, que vem do ambiente. Um `requestState` emitido pelo processo A conclui a reserva no processo B com o mesmo segredo (teste automatizado: mata A, sobe B, faz o retry). Com outro segredo, B recusa com `-32602`. Isso não se confunde com a agenda: as **reservas** continuam em memória e somem no restart (B começa de novo em `res-0003`); o que sobrevive é a capacidade de **retomar** o pedido.
+
+**Capabilities.** Lidas do `_meta` de **cada** request, nunca de um anterior. Quem confere é o SDK: depois que o handler devolve `input_required`, ele compara cada entrada de `inputRequests` com `clientCapabilities` e, se faltar `elicitation.form`, troca a resposta por HTTP 400 `-32021` com `data.requiredCapabilities: { elicitation: { form: {} } }`. Nada é gravado (a tool só pergunta, não reserva). Casos testados:
+
+| `clientCapabilities` | Resultado |
+|---|---|
+| `{ elicitation: { form: {} } }` | `input_required` |
+| `{}` | 400, `-32021` |
+| `{ elicitation: { url: {} } }` | 400, `-32021` (form ausente) |
+| `{ elicitation: {} }` | `input_required`: o SDK segue a leitura de compatibilidade da spec, em que `elicitation` sem modo significa form |
+| campo ausente no `_meta` | 400, `-32602` (metadado obrigatório, não capability) |
+| qualquer um, **sem** conflito | a reserva conclui: a capability só é exigida quando há pergunta |
+
+**Retry.** O handler vê `ctx.mcpReq.requestState()`:
+
+1. ausente → primeira rodada, com os `arguments`;
+2. presente → o pedido é `selo.pedido`; os `arguments` do retry são **ignorados** (o validador aceita ignorar ou rejeitar; ignorar é o que o SDK facilita);
+3. `inputResponse(inputResponses, selo.chave)`: sem resposta de elicitation nessa chave → `isError` "Resposta ausente…", nada gravado;
+4. `decline` → `complete`, `reservado: false`, `motivo: "recusado"` (como `wire/11`); `cancel` → idem com `motivo: "cancelado"`. Sem `isError`. O `CANCELED` da Task é responsabilidade do agente;
+5. `accept` com sala fora de `selo.alternativas` → `isError` "Escolha fora das alternativas oferecidas: …", nada gravado;
+6. `accept` válido → revalida a sala escolhida e grava com início, fim e responsável **do selo**. Se ela foi ocupada nesse meio-tempo, devolve um **novo** `input_required` com as alternativas que sobraram (R5). Isso também impede que o mesmo `requestState` aceito duas vezes reserve duas vezes.
+
+Por que a escolha inválida é `isError` e não `-32602`: o `requestState` é válido (o SDK já conferiu); quem recusa é a execução da tool. E o `McpServer` converte qualquer exceção do handler de tool em resultado `isError`, então `-32602` exigiria contornar o SDK.
+
+**Testes (135).**
+
+- `regras.test.ts` (+6): capacidade, exclusão da pedida, disponibilidade no intervalo, ordem, limite de 3, ordem independente do arquivo, lista vazia.
+- `estado-mrtr.test.ts` (10): ida e volta; legível mas sem o segredo; 1 caractere alterado; corpo trocado com o MAC original; outra chave; expiração com relógio simulado; selo de outra versão ou de outra ferramenta; lixo; validação do segredo (ausente, curto, não hex), sem vazar o valor.
+- `mrtr.test.ts` (27, por HTTP contra o processo real): o formato do `input_required`; limite e ordem; uma alternativa; sem alternativas; regras antes do conflito; as 6 linhas de capabilities e o `-32021` sem reserva; accept com id novo e logs; decline; cancel; argumentos adulterados; escolha fora do enum; chave errada e resposta ausente; sala ocupada entre pergunta e resposta; replay; estado adulterado, expirado e forjado; log sem segredo nem estado; restart com o mesmo segredo e com outro; processo que não sobe sem segredo.
+
+Mutações manuais (no ambiente de nuvem), cada uma derrubando testes:
+
+| Mutação | Testes que falharam |
+|---|---|
+| Usar os `arguments` do retry em vez do selo | 1 |
+| Não conferir a escolha contra o enum | 1 |
+| Sem `requestState.verify` | 13 |
+| Não ordenar por capacidade | 3 |
+| Não filtrar por capacidade | 8 |
+| Não revalidar a sala escolhida | 2 |
+| Sem expiração | 1 |
+
+**Validador.** Numa instância recém-iniciada: **20/36**, com 01 a 20 passando. Hoje as verificações 16, 18 e 20 criam reservas, então uma segunda execução sobre o mesmo processo dá resultados diferentes (no ambiente de nuvem, 18/36: a 16 e a 18 caem porque as salas que elas escolhem já estão ocupadas e o servidor pergunta de novo). Rode sempre com o servidor recém-iniciado, como o próprio validador pede.
