@@ -48,7 +48,7 @@ Em vez de confiar no enunciado ou na documentação, **instalei os pacotes e exe
 | `requestState` adulterado | `createRequestStateCodec` (HMAC-SHA256) + `requestState.verify` → `-32602 "Invalid or expired requestState"` | 17 ✅ |
 | Argumentos adulterados no retry | O handler lê o payload selado em `ctx.mcpReq.requestState()` e ignora os `arguments` | 18 ✅ (por desenho) |
 | Mesmo `requestState` reutilizado (decline) | Aceito: o codec é stateless, não há "uso único" | 19 ✅ |
-| Cliente vê o `input_required` cru | `new Client(..., { inputRequired: { autoFulfill: false } })` + `callTool(..., { allowInputRequired: true })` | base da ponte |
+| Cliente vê o `input_required` cru | `new Client(..., { inputRequired: { autoFulfill: false } })` + `request(tools/call, withInputRequired(...), { allowInputRequired: true })` (o spike usou `callTool`; ver Passo 8) | base da ponte |
 | Retry com id novo | O cliente numera sozinho (`id=2` → `id=3`) | avaliador ✅ |
 | `_meta` e headers no agente | O cliente (`versionNegotiation: { pin: '2026-07-28' }`) adiciona `protocolVersion`, `clientInfo`, `clientCapabilities`, `MCP-Protocol-Version`, `Mcp-Method` e `Mcp-Name` sozinho; nosso `_meta.traceparent` é mesclado | enunciado ✅ |
 
@@ -163,21 +163,28 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │       └── dominio/
 │           ├── agenda.ts             carrega dados/, guarda reservas em memória, gera res-NNNN
 │           └── regras.ts             validações, conflito, alternativas, mensagens exatas (funções puras)
-└── agente/
-    ├── package.json
-    ├── package-lock.json
-    ├── tsconfig.json
-    └── src/
-        ├── main.ts              express na 7300: card, /a2a, middlewares (A2A-Version, traceparent)
-        ├── config.ts            porta, MCP_URL, A2A_PUBLIC_URL
-        ├── card.ts              Agent Card v1.0 (espelho de exemplos/wire/07)
-        ├── executor.ts          AgentExecutor do SDK A2A: recebe mensagem e publica estado/artifact
-        ├── pedido.ts            parser do texto fixo; não é regra de domínio, é formato de entrada
-        ├── ponte.ts             coordenador MCP ↔ A2A (seção 9)
-        ├── retomadas.ts         Map<taskId, ContextoRetomada>, privado, nunca serializado para fora
-        ├── trace.ts             parse e geração de traceparent, AsyncLocalStorage por request
-        └── mcp/
-            └── cliente.ts       Client do SDK: conecta 1x, descobre, lê política e chama tools
+└── agente/                      (✅ = existe desde o Passo 8; o resto é planejado)
+    ├── package.json             ✅
+    ├── package-lock.json        ✅
+    ├── tsconfig.json            ✅
+    ├── src/
+    │   ├── main.ts              express na 7300: card, /a2a, middlewares (A2A-Version, traceparent)
+    │   ├── config.ts            ✅ MCP_URL, versão e capabilities do cliente (+ porta e A2A_PUBLIC_URL depois)
+    │   ├── card.ts              Agent Card v1.0 (espelho de exemplos/wire/07)
+    │   ├── executor.ts          AgentExecutor do SDK A2A: recebe mensagem e publica estado/artifact
+    │   ├── pedido.ts            parser do texto fixo; não é regra de domínio, é formato de entrada
+    │   ├── ponte.ts             coordenador MCP ↔ A2A (seção 9)
+    │   ├── retomadas.ts         Map<taskId, ContextoRetomada>, privado, nunca serializado para fora
+    │   ├── trace.ts             ✅ parse/validação de traceparent e span filho (+ AsyncLocalStorage depois)
+    │   ├── demo.ts              ✅ demonstração de terminal do cliente MCP (Passo 8)
+    │   └── mcp/
+    │       ├── cliente.ts       ✅ Client do SDK: conecta 1x, descobre, lê resource, tools/call genérico
+    │       ├── resultado.ts     ✅ completo × erro_execucao × input_required, com o resultado bruto
+    │       ├── erros.ts         ✅ ErroMcp (jsonrpc / transporte / resposta) e ErroDeUso
+    │       ├── mrtr.ts          ✅ lê inputRequests, valida a resposta, monta inputResponses
+    │       ├── politica.ts      ✅ URI da política e extração da versão (\r?\n)
+    │       └── observacao.ts    ✅ fetch que registra o tráfego (testes e demo)
+    └── test/                    ✅ unidade.test.ts, integracao.test.ts, apoio.ts
 ```
 
 Por que essa granularidade:
@@ -224,7 +231,7 @@ Por que essa granularidade:
 |---|---|---|---|---|
 | Início da Task | `tools/list` | `MCP-Protocol-Version`, `Mcp-Method` | `protocolVersion`, `clientInfo`, `clientCapabilities`, **`traceparent`** | Descoberta: confere que `reservar_sala` existe, sem lista fixa no código |
 | Início da Task | `resources/read politica://uso` | + `Mcp-Name: politica://uso` | idem | Extrai `versao: AAAA-MM-DD` da 1ª linha |
-| Pedido | `tools/call reservar_sala` | + `Mcp-Name: reservar_sala` | idem | `callTool(..., { allowInputRequired: true })` |
+| Pedido | `tools/call reservar_sala` | + `Mcp-Name: reservar_sala` | idem | `request(tools/call, withInputRequired(CallToolResult), { allowInputRequired: true })` (ver Passo 8: o `callTool` da 2.4.0 não serve no modo manual) |
 | Retomada | `tools/call reservar_sala` | idem | idem | Mesmo `name`/`arguments` + `inputResponses` + `requestState` ecoado; **id novo gerado pelo SDK** |
 
 Decisão: fazer descoberta e leitura da política **a cada Task nova**, e não só ao subir. O custo é desprezível; o log fica com `tools/list` → `resources/read` → `tools/call` sob o mesmo trace-id, que é exatamente o que o avaliador procura; e o agente continua correto se o MCP for reiniciado.
@@ -235,7 +242,7 @@ Nós **não** escrevemos esses headers à mão. O transporte do SDK cliente deri
 
 ### 6.4 Ids JSON-RPC
 
-São gerados pelo SDK cliente, monotônicos por instância (`0, 1, 2, 3…`). Como o retry é um `callTool` **novo**, ele recebe um id novo automaticamente. Nunca passamos id manualmente.
+São gerados pelo SDK cliente, monotônicos por instância (`0, 1, 2, 3…`). Como o retry é um `tools/call` **novo**, ele recebe um id novo automaticamente. Nunca passamos id manualmente.
 
 ---
 
@@ -373,7 +380,7 @@ O executor converte `Desfecho` em eventos A2A. A ponte não conhece eventos A2A,
 7. **Valida** `escolha=X`: `X === 'recusar'` ou `X ∈ enum`. Qualquer outra coisa → `pausada` com a **mesma** linha, sem chamar o MCP.
 8. **Prepara** `inputResponses = { [chave]: { action: 'accept', content: { sala: X } } }` ou `{ [chave]: { action: 'decline' } }`.
 9. **Recupera** o `requestState` do `Map`, intacto.
-10. **Novo `tools/call`:** um `callTool` novo com os mesmos `name`/`arguments` + `inputResponses` + `requestState`. O SDK atribui o id novo.
+10. **Novo `tools/call`:** um `tools/call` novo (`ClienteMcp.continuar`) com os mesmos `name`/`arguments` + `inputResponses` + `requestState`. O SDK atribui o id novo.
 11. **Traduz:** `complete` com `reservado: true` → `concluida`; `reservado: false` → `cancelada`; `isError` → `falhou`; outro `input_required` → `pausada` de novo (defensivo). Em estado terminal, apaga a `ContextoRetomada`.
 
 ### 9.3 Sequência com conflito e escolha
@@ -935,3 +942,125 @@ Mutações manuais (no ambiente de nuvem), cada uma derrubando testes:
 | Sem expiração | 1 |
 
 **Validador.** Numa instância recém-iniciada: **20/36**, com 01 a 20 passando. Hoje as verificações 16, 18 e 20 criam reservas, então uma segunda execução sobre o mesmo processo dá resultados diferentes (no ambiente de nuvem, 18/36: a 16 e a 18 caem porque as salas que elas escolhem já estão ocupadas e o servidor pergunta de novo). Rode sempre com o servidor recém-iniciado, como o próprio validador pede.
+
+### Passo 8: cliente MCP independente (11/11/2026)
+
+| Item | Situação |
+|---|---|
+| `agente/` com `@modelcontextprotocol/client` 2.4.0 (exata), sem importar nada de `servidor-mcp/` | ✅ |
+| `src/config.ts`, `src/trace.ts`, `src/mcp/{cliente,resultado,erros,mrtr,politica,observacao}.ts`, `src/demo.ts` | ✅ |
+| `test/unidade.test.ts` (19) + `test/integracao.test.ts` (23, servidor real em outro processo) | ✅ `npm test`: 42/42 |
+| Regressão do servidor | ✅ `servidor-mcp`: 135/135; validador 20/36 (21 a 36 são do agente A2A) |
+
+**Estrutura.** Cada responsabilidade pedida tem um lugar, e nenhuma duplica o SDK:
+
+| Responsabilidade | Onde | Quem faz de fato |
+|---|---|---|
+| Configuração | `config.ts` | `MCP_URL` (padrão `http://localhost:7301/mcp`), versão `2026-07-28`, `clientInfo`, capabilities |
+| Transporte Streamable HTTP | `ClienteMcp.conectar` | `StreamableHTTPClientTransport` do SDK (POST JSON, `Accept: application/json, text/event-stream`) |
+| Construção do request | `ClienteMcp` (`params`) + SDK | nós: `name`, `arguments`, `inputResponses`, `requestState`, `_meta.traceparent`; SDK: id, `_meta` obrigatório e headers |
+| Descoberta | `ClienteMcp.descobrir` | `tools/list` sempre no fio (`cacheMode: 'refresh'`), guarda o catálogo |
+| Resources | `ClienteMcp.lerRecurso` / `lerPolitica`, `politica.ts` | `resources/read` + versão da 1ª linha |
+| Execução de tools | `ClienteMcp.chamarTool` | confere a descoberta e os `required` do `inputSchema`, envia, classifica |
+| Resultados e erros | `resultado.ts`, `erros.ts` | `completo` / `erro_execucao` / `input_required`; `ErroMcp` / `ErroDeUso` |
+| MRTR | `mrtr.ts`, `ClienteMcp.continuar` | lê `inputRequests`, valida a resposta contra o `requestedSchema`, monta `inputResponses` |
+| Trace context | `trace.ts` | valida o `traceparent` e gera um span filho por request |
+| Demonstração | `demo.ts` | terminal; a escolha vem do teclado ou de `--escolha/--recusar/--cancelar` |
+
+**Ciclo de vida.** `ClienteMcp.conectar({ url })` cria **um** `Client` do SDK com `versionNegotiation: { mode: { pin: '2026-07-28' } }`, `capabilities: { elicitation: { form: {} } }` e `inputRequired: { autoFulfill: false }`, e conecta. O `connect()` manda um `server/discover` (id `"server-discover-probe-1"`), que só confirma que o servidor fala a revisão pinada: não abre sessão. Depois disso, **todo** request leva no `_meta` `protocolVersion`, `clientInfo` e `clientCapabilities`, colocados pelo SDK a partir da configuração do `Client` (e não de algo que o servidor tenha respondido). O servidor não guarda nada entre requests.
+
+**Headers.** O transporte do SDK deriva `MCP-Protocol-Version`, `Mcp-Method` e `Mcp-Name` do próprio corpo que serializa. Conferido no fio, em todo request dos testes: `Mcp-Name` = `params.name` em `tools/call`, = `params.uri` em `resources/read`, e ausente em `tools/list` e `server/discover`, como em `exemplos/wire/01`, `03` e `05`.
+
+**Descoberta × contrato × hardcode.**
+
+- *Conhecer o contrato do caso de uso* é legítimo: a demo (e, no Passo 9, a ponte) sabe que quer **reservar uma sala** e que o enunciado chama isso de `reservar_sala` com quatro argumentos. Esse conhecimento mora na camada de aplicação.
+- *Descobrir em runtime* é perguntar ao servidor o que ele oferece **agora** (`tools/list`) e só então chamar. `chamarTool` recusa, sem enviar nada, uma tool que não veio na última descoberta, e também argumentos `required` ausentes no `inputSchema` recebido. Se o servidor mudar o schema ou tirar a tool, o cliente percebe antes de mandar o request.
+- *Hardcode* seria o transporte ou a descoberta terem uma lista fixa (`['listar_salas', ...]`) e chamarem sem perguntar. Nenhum módulo de `src/mcp/` cita nome de tool; os únicos nomes estão em `demo.ts` e nos testes, que são consumidores.
+
+**Política como Resource.** A política é **dado**, não ação: não tem argumento nem efeito colateral, e é identificada por URI. Por isso é um Resource, e quem decide **quando** lê-la é o cliente/Host (aqui, antes de reservar, para citar a versão), e não o modelo nem o servidor. `lerPolitica()` devolve o texto intacto (`text/markdown`, CRLF preservado se vier assim) e a versão extraída de `versao: AAAA-MM-DD` com `split(/\r?\n/)`. Testado com outra política (`DADOS_DIR` com `versao: 2099-12-31` em CRLF): o cliente extrai `2099-12-31`, e a reserva cita a mesma versão. Nenhum valor de versão existe no código do cliente.
+
+**Execução e resultados.** `chamarTool(nome, argumentos, { traceparent?, continuacao? })` devolve um de três resultados e lança um de dois erros:
+
+| Desfecho | Como chega | Exemplo |
+|---|---|---|
+| `completo` | `result` sem `isError`; `estruturado` = `structuredContent` | reserva feita, recusa (`reservado: false`) |
+| `erro_execucao` | `result.isError: true`; `mensagem` = texto | `Sala inexistente: sala-delorean` |
+| `input_required` | `result.resultType: "input_required"` | conflito de horário |
+| `ErroMcp('jsonrpc')` | resposta com `error` | `-32602` (requestState adulterado, URI desconhecida) |
+| `ErroMcp('transporte')` | sem resposta MCP | conexão recusada, servidor caiu, timeout |
+| `ErroDeUso` | nada foi enviado | tool não descoberta, argumento obrigatório ausente, escolha fora do enum |
+
+Todo resultado carrega `bruto` (o objeto do protocolo, sem perda) e `chamada` (`nome` + `argumentos`), que o retry reaproveita.
+
+**Por que `client.request` e não `client.callTool`.** Na 2.4.0, `callTool(..., { allowInputRequired: true })` confere o `outputSchema` da tool **também** quando a resposta é `input_required` (que não tem `structuredContent`) e lança `-32600 "has an output schema but did not return structured content"`. Encontrado no primeiro teste real. O SDK documenta o "caminho de schema explícito" para o modo manual: `client.request({ method: 'tools/call', params }, withInputRequired(specTypeSchemas.CallToolResult), { allowInputRequired: true })`. É a mesma API pública, com o mesmo transporte, ids e `_meta`; só a validação do `structuredContent` contra o `outputSchema` deixa de ser feita no cliente. Para a ponte isso não muda nada: o servidor valida o próprio `outputSchema` antes de responder.
+
+**`input_required` no cliente.** Nenhum handler de `elicitation/create` é registrado e `autoFulfill` é `false`: o SDK nunca responde sozinho. O resultado chega inteiro ao chamador, que lê de `pedidos[]`: a **chave** (lida da resposta: `escolha_de_sala` aqui, `__main__:escolha_de_sala` no exemplo de wire do SDK Python, por isso nunca é presumida), `metodo` (`elicitation/create`), `modo` (`form`), `mensagem`, `requestedSchema` e os campos com `opcoes` (o `enum`). Pedidos que não são form (URL, sampling) ficam marcados `suportado: false`, e `aceitar()` se recusa a respondê-los.
+
+**`requestState` opaco.** É guardado em `ResultadoInputRequired.requestState` exatamente como veio, e reenviado no retry sem nenhuma transformação. O teste compara o enviado com o recebido, byte a byte. O cliente não decodifica, não reconstrói o pedido a partir dele, não altera, não reassina e não verifica nada localmente. Ele é base64url legível, mas lê-lo criaria uma dependência no formato interno do servidor, e a integridade só o servidor pode garantir, porque só ele tem a chave.
+
+**`inputResponses` e retry.** `aceitar(pedido, { sala })` valida contra o `requestedSchema` **recebido** (obrigatório, tipo, `enum`, campo não pedido) e devolve `{ action: 'accept', content }`; `recusar()` e `cancelar()` devolvem `{ action: 'decline' }` e `{ action: 'cancel' }`. `continuar(pausa, respostas)` exige uma resposta para **cada** chave pedida (e nenhuma a mais) e chama `chamarTool` de novo com o mesmo `name` e os mesmos `arguments`, mais `inputResponses` e `requestState` em `params`, **fora** de `arguments` (o teste confere os dois lados). Como é um request novo, o SDK dá a ele um id novo (`2` → `3`). Validar a escolha no cliente é defesa e boa experiência (o usuário corrige antes de gastar um round trip); o servidor continua sendo a autoridade e revalida tudo.
+
+**traceparent.** `00-<trace-id 32 hex>-<parent-id 16 hex>-<flags 2 hex>`. O **trace-id** identifica a operação inteira e atravessa todos os processos sem mudar; o **parent-id** (span-id) identifica quem fez cada chamada, e cada salto cria o seu. Com `{ traceparent }` na operação, cada request leva em `_meta.traceparent` o **mesmo trace-id e as mesmas flags com um span novo**. Nos testes, os quatro requests (`tools/list`, `resources/read`, `tools/call`, retry) saem com `4bf92f35…` e quatro spans diferentes, e o stderr do servidor registra o trace-id nas quatro linhas `recv`. Sem `traceparent` informado, nada é enviado (`traceparent=-` no log): o cliente não inventa um. No Passo 9, o middleware do agente vai ler o header da chamada A2A, e o mesmo trace-id vai ligar a Task A2A a cada request MCP que ela gerou, inclusive o retry feito minutos depois, a partir da `ContextoRetomada`.
+
+```mermaid
+sequenceDiagram
+    participant U as Usuário (terminal)
+    participant C as Cliente MCP (agente/src)
+    participant S as Servidor MCP :7301
+    C->>S: server/discover (connect, uma vez)
+    S-->>C: supportedVersions inclui 2026-07-28
+    C->>S: tools/list (id=0, _meta + traceparent)
+    S-->>C: tools[] com inputSchema/outputSchema
+    C->>S: resources/read politica://uso (id=1)
+    S-->>C: text/markdown "versao: 2026-11-01 ..."
+    C->>S: tools/call reservar_sala (id=2)
+    S-->>C: input_required: inputRequests{chave: elicitation form, enum} + requestState
+    Note over C,S: o request 2 terminou; nada fica aberto
+    C->>U: alternativas: sala-fusca, sala-mirante
+    U->>C: 1 (sala-fusca)
+    Note over C: valida contra o requestedSchema recebido
+    C->>S: tools/call reservar_sala (id=3, NOVO)<br/>arguments iguais + inputResponses{chave} + requestState ecoado
+    S-->>C: complete: reservado true, sala-fusca, politica 2026-11-01
+```
+
+**Terminal hoje × A2A no Passo 9.** Hoje a pausa vive na memória do processo da demo, e a escolha vem do teclado no mesmo processo. No agente, o `input_required` vira `TASK_STATE_INPUT_REQUIRED`, a `pausa` (com o `requestState`) vai para o `Map` privado de retomadas, e a escolha chega em outro `SendMessage`, talvez minutos depois e em outro request HTTP. O `ClienteMcp` foi feito para isso: `continuar(pausa, respostas)` não depende de nada além do objeto `pausa`.
+
+**Erros, observados nos testes.** Servidor fora do ar no `connect()` → `ErroMcp('transporte', 'ERA_NEGOTIATION_FAILED')`. O SDK classifica como falha de negociação; `erros.ts` procura `fetch failed` na cadeia de causas e reclassifica como transporte. Servidor derrubado depois da conexão → `ErroMcp('transporte')` no `tools/call` seguinte. `requestState` adulterado → `ErroMcp('jsonrpc', -32602)`. URI desconhecida → `ErroMcp('jsonrpc', -32602)`.
+
+**Comandos.**
+
+```powershell
+cd agente
+npm install                  # @modelcontextprotocol/client 2.4.0 + tsx/typescript (dev)
+npm run check                # tsc --noEmit
+npm test                     # 42 testes; sobe o servidor-mcp sozinho em porta livre
+
+# com o servidor no ar (cd servidor-mcp; npm start), em outro terminal:
+npm run demo                                                  # reserva simples (aquario 24/11 10h)
+npm run demo -- --exemplo conflito                            # garagem 03/11 14h: escolha no teclado
+npm run demo -- --exemplo conflito --escolha sala-fusca
+npm run demo -- --exemplo conflito --recusar                  # ou --cancelar
+npm run demo -- --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+$env:MCP_URL = 'http://localhost:7301/mcp'                    # opcional
+```
+
+A demo **altera a agenda** do servidor (a aceitação no dia 03 ocupa a fusca às 14h, que o validador espera livre). Reinicie o servidor antes de rodar o validador.
+
+**Testes.** Unidade (19): config, traceparent, versão LF/CRLF, leitura de `inputRequests` sem presumir a chave, validação contra o schema, chaves faltando/sobrando, pedido não-form, classificação e erros. Integração (23), contra o servidor real em outro processo e com cada cenário num dia próprio (13 a 22/11): A descoberta (inclusive sem descoberta e tool não oferecida, ambos sem nada no fio, e `tools/list` antes de `tools/call` no log), B política (inclusive outra versão em CRLF), C reserva simples, D conflito, E aceitar (id novo, mesma chave, `requestState` idêntico, nada em `arguments`), F recusar, G cancelar (as duas conferem que nenhuma sala foi ocupada), escolha inválida barrada, `requestState` reutilizado, H erro de execução, JSON-RPC e transporte (antes e depois da conexão), I trace-id nos quatro requests e no log do servidor, sem trace inventado, J ids distintos, `_meta` e headers em **todo** request.
+
+**Mutações** (quebrei o cliente de propósito):
+
+| Mutação | Testes que falharam |
+|---|---|
+| Não reenviar o `requestState` | 6 |
+| `inputResponses` dentro de `arguments` | 5 |
+| Não checar a descoberta antes do `tools/call` | 2 |
+| Não validar o `enum` | 2 |
+| Não enviar `traceparent` | 1 |
+| Repassar o `traceparent` sem span novo | 1 |
+| Chave de `inputResponses` fixa em vez de lida | 1 |
+| Versão da política fixa no código | 1 |
+| `split('\n')` em vez de `split(/\r?\n/)` | 0: equivalente, porque a regex da linha (`\s*$`) já absorve o `\r` |
+| `tools/list` com `cacheMode: 'use'` | 0: equivalente hoje (o servidor não manda `ttlMs`, então o SDK sempre busca de novo); `'refresh'` fica explícito |
+
+**Pontos reaproveitados no Host MCP (Passo 9).** `ClienteMcp` inteiro (um por processo), `descobrir` e `lerPolitica` a cada Task, `chamarTool` + `continuar`, o tipo `ResultadoInputRequired` como conteúdo da `ContextoRetomada`, `aceitar/recusar/cancelar`, `traceparentFilho` e `ErroMcp`/`ErroDeUso` → `TASK_STATE_FAILED`. Fica de fora do Host: `demo.ts` e `observacao.ts` (só testes e demonstração).
