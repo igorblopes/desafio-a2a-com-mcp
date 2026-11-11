@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { log } from './log.ts';
 import { registrarListarSalas } from './tools/listar-salas.ts';
 import { registrarConsultarDisponibilidade } from './tools/consultar-disponibilidade.ts';
+import { registrarReservarSala } from './tools/reservar-sala.ts';
 import { registrarPolitica } from './recursos/politica.ts';
 
 export function criarServidor(): McpServer {
@@ -18,6 +19,7 @@ export function criarServidor(): McpServer {
   );
   registrarListarSalas(servidor);
   registrarConsultarDisponibilidade(servidor);
+  registrarReservarSala(servidor);
   registrarPolitica(servidor);
   return servidor;
 }

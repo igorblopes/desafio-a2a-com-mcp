@@ -2,7 +2,7 @@
 
 Servidor MCP da Central de Salas: Streamable HTTP, revisão `2026-07-28`, sem sessão. Cada request carrega no `_meta` a própria versão e as próprias capabilities, e o servidor responde sempre em JSON (nunca SSE).
 
-> **Estado atual (Passo 5):** existem as tools `listar_salas` e `consultar_disponibilidade` e o resource `politica://uso`. `reservar_sala` e o MRTR entram nos próximos passos.
+> **Estado atual (Passo 6):** existem as tools `listar_salas`, `consultar_disponibilidade` e `reservar_sala` (caminho feliz) e o resource `politica://uso`. Conflito de horário em `reservar_sala` ainda tem resposta **provisória** (`isError` com o texto `[provisorio: MRTR no Passo 7]`); o MRTR entra no Passo 7.
 
 ## Pré-requisito
 
@@ -112,10 +112,12 @@ Ele avisa que notificações enviadas no meio de uma chamada são descartadas no
 | `src/servidor.ts` | Factory do `McpServer` (uma instância por request, por isso stateless) e tratamento do `onerror` |
 | `src/tools/listar-salas.ts` | Tool `listar_salas`: `structuredContent` conforme o `outputSchema` e o mesmo JSON em texto |
 | `src/tools/consultar-disponibilidade.ts` | Tool `consultar_disponibilidade`: `{ sala, livre, conflitos }` ou `isError` com a mensagem da regra |
-| `src/recursos/politica.ts` | Resource `politica://uso`: lê `dados/politica-de-uso.md` uma vez e o serve sem transformação (`text/markdown`) |
-| `src/dominio/agenda.ts` | Carrega e valida `dados/salas.json` e `dados/reservas.json` uma vez; guarda as reservas em memória |
+| `src/tools/reservar-sala.ts` | Tool `reservar_sala`: valida com as mesmas regras, grava na agenda em memória e devolve `ReservaOut` com a versão da política; conflito com resposta provisória até o Passo 7 |
+| `src/recursos/politica.ts` | Resource `politica://uso`: lê `dados/politica-de-uso.md` uma vez e o serve sem transformação (`text/markdown`); extrai a versão da primeira linha (`versaoDaPolitica`) |
+| `src/dominio/agenda.ts` | Carrega `salas.json` e `reservas.json` uma vez; agenda em memória compartilhada pelas tools, com `adicionarReserva` e ids `res-NNNN` |
 | `src/dominio/regras.ts` | Regras de negócio puras: sala, intervalo, janela 08:00–20:00 (UTC−03:00), duração ≤ 2h e conflito `[inicio, fim)`, com as mensagens exatas |
 | `test/regras.test.ts` | Testes unitários das regras |
+| `test/agenda.test.ts` | Testes unitários da agenda, dos ids e da versão da política |
 | `test/contrato.test.ts` | Testes de contrato (`npm test`): sobe o servidor numa porta livre e faz requests HTTP reais |
 
 ## consultar_disponibilidade (Passo 5)
@@ -146,6 +148,34 @@ function Consultar($sala, $inicio, $fim) {
 $r = Consultar 'sala-inexistente' '2026-11-03T09:00:00-03:00' '2026-11-03T10:00:00-03:00'
 "isError=$($r.isError) texto=$($r.content[0].text)"
 # isError=True texto=Sala inexistente: sala-inexistente
+```
+
+## reservar_sala (Passo 6)
+
+Recebe `sala`, `inicio`, `fim` (ISO 8601 com offset) e `responsavel`, os quatro obrigatórios, e aplica as mesmas regras de `consultar_disponibilidade`, com as mesmas mensagens de erro. Com o intervalo livre, grava a reserva na agenda em memória e responde `ReservaOut` com as oito chaves sempre presentes: `reserva`, `reservado`, `sala`, `inicio`, `fim`, `responsavel`, `politica` (a versão lida de `politica-de-uso.md`) e `motivo`. A reserva aparece nas consultas seguintes até o processo reiniciar; `dados/reservas.json` nunca é reescrito. Os ids seguem o padrão do starter: num processo novo, a primeira reserva é `res-0003`. Conflito de horário ainda tem resposta **provisória** (`isError: true` com `[provisorio: MRTR no Passo 7]`, sem criar nada).
+
+Os exemplos reaproveitam o `$url` e o `$meta` de "Exemplos de request" e a função `Consultar` da seção anterior. As saídas abaixo são de um servidor recém-iniciado.
+
+```powershell
+function Reservar($sala, $inicio, $fim, $responsavel) {
+  $corpo = @{ jsonrpc = '2.0'; id = 30; method = 'tools/call'
+              params = @{ name = 'reservar_sala'; arguments = @{ sala = $sala; inicio = $inicio; fim = $fim; responsavel = $responsavel }; _meta = $meta } } |
+           ConvertTo-Json -Depth 10
+  $h = @{ 'Accept' = 'application/json, text/event-stream'; 'MCP-Protocol-Version' = '2026-07-28'
+          'Mcp-Method' = 'tools/call'; 'Mcp-Name' = 'reservar_sala' }
+  (Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Headers $h -Body $corpo).result
+}
+
+# reserva válida
+$r = Reservar 'sala-aquario' '2026-11-03T10:00:00-03:00' '2026-11-03T11:00:00-03:00' 'Marty'
+"resultType=$($r.resultType) isError=$($r.isError)"
+# resultType=complete isError=False
+$r.structuredContent | ConvertTo-Json -Compress
+# {"reserva":"res-0003","reservado":true,"sala":"sala-aquario","inicio":"2026-11-03T10:00:00-03:00","fim":"2026-11-03T11:00:00-03:00","responsavel":"Marty","politica":"2026-11-01","motivo":null}
+
+# a consulta seguinte já enxerga a reserva
+(Consultar 'sala-aquario' '2026-11-03T10:00:00-03:00' '2026-11-03T11:00:00-03:00').structuredContent | ConvertTo-Json -Compress -Depth 5
+# {"sala":"sala-aquario","livre":false,"conflitos":[{"id":"res-0003","inicio":"2026-11-03T10:00:00-03:00","fim":"2026-11-03T11:00:00-03:00","responsavel":"Marty"}]}
 ```
 
 ## Resources (Passo 4)
@@ -187,4 +217,4 @@ No PowerShell 5.1, textos com acento nas respostas (como o `title` "Política de
 npm test
 ```
 
-Dois arquivos, executados juntos pelo `node:test`, sem precisar de servidor no ar. `test/regras.test.ts` testa as regras de negócio como funções puras: sala, intervalo, janela, duração, sobreposição, offsets e independência do fuso da máquina. `test/contrato.test.ts` sobe o próprio servidor numa porta livre e faz requests HTTP reais, iguais aos do validador: `tools/list`, `listar_salas`, `consultar_disponibilidade` (livre, ocupada e os quatro erros de execução), `resources/list`, `resources/read`, URI inexistente, `_meta` obrigatório, consistência dos headers e logs no stderr.
+Três arquivos, executados juntos pelo `node:test`, sem precisar de servidor no ar. `test/regras.test.ts` testa as regras de negócio como funções puras: sala, intervalo, janela, duração, sobreposição, offsets e independência do fuso da máquina. `test/agenda.test.ts` testa a agenda em memória: ids `res-NNNN`, gravação e visibilidade das reservas, pedidos inválidos que não gravam, `dados/reservas.json` intocado e a extração da versão da política (LF e CRLF). `test/contrato.test.ts` sobe o próprio servidor numa porta livre e faz requests HTTP reais, iguais aos do validador: `tools/list`, `listar_salas`, `consultar_disponibilidade` (livre, ocupada e os quatro erros de execução), `reservar_sala` (reserva válida visível na consulta seguinte, ids sequenciais, os quatro erros, o conflito provisório, reinício do processo e versão da política vinda de `DADOS_DIR`), `resources/list`, `resources/read`, URI inexistente, `_meta` obrigatório, consistência dos headers e logs no stderr.

@@ -5,7 +5,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +21,6 @@ const TRACEPARENT = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 
 let processo: ChildProcess;
 let url = '';
-let stderr = '';
 let proximoId = 1;
 
 function portaLivre(): Promise<number> {
@@ -34,25 +34,35 @@ function portaLivre(): Promise<number> {
   });
 }
 
-before(async () => {
+/** Sobe src/main.ts numa porta livre e espera o "[mcp] pronto". */
+async function subirServidor(env: Record<string, string> = {}) {
   const porta = await portaLivre();
-  url = `http://localhost:${porta}/mcp`;
-  processo = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
+  const filho = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
     cwd: raiz,
-    env: { ...process.env, MCP_PORT: String(porta) },
+    env: { ...process.env, MCP_PORT: String(porta), ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
+  const saida = { texto: '' };
   await new Promise<void>((resolve, reject) => {
-    const limite = setTimeout(() => reject(new Error(`servidor não subiu:\n${stderr}`)), 15000);
-    processo.stderr!.on('data', (parte: Buffer) => {
-      stderr += parte.toString('utf8');
-      if (stderr.includes('[mcp] pronto')) {
+    const limite = setTimeout(() => reject(new Error(`servidor não subiu:\n${saida.texto}`)), 15000);
+    filho.stderr!.on('data', (parte: Buffer) => {
+      saida.texto += parte.toString('utf8');
+      if (saida.texto.includes('[mcp] pronto')) {
         clearTimeout(limite);
         resolve();
       }
     });
-    processo.once('exit', (codigo) => reject(new Error(`servidor saiu (${codigo}):\n${stderr}`)));
+    filho.once('exit', (codigo) => reject(new Error(`servidor saiu (${codigo}):\n${saida.texto}`)));
   });
+  return { url: `http://localhost:${porta}/mcp`, processo: filho, saida };
+}
+
+let saidaPrincipal = { texto: '' };
+before(async () => {
+  const s = await subirServidor();
+  processo = s.processo;
+  url = s.url;
+  saidaPrincipal = s.saida;
 });
 
 after(() => {
@@ -60,6 +70,7 @@ after(() => {
 });
 
 type Opcoes = {
+  url?: string;
   nome?: string;
   omitir?: 'protocolVersion' | 'clientCapabilities';
   traceparent?: string;
@@ -82,7 +93,7 @@ async function mcp(metodo: string, params: Record<string, unknown> = {}, op: Opc
     ...op.headers,
   };
   const id = proximoId++;
-  const r = await fetch(url, {
+  const r = await fetch(op.url ?? url, {
     method: 'POST',
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id, method: metodo, params: { ...params, _meta: meta } }),
@@ -238,6 +249,155 @@ test('G: consultar_disponibilidade sem clientCapabilities → HTTP 400 e -32602'
   assert.equal(corpo.error?.code, -32602);
 });
 
+// ---------- reservar_sala ----------
+// Estes testes ALTERAM a agenda do servidor. Usam o dia 04/11/2026, que não
+// aparece em nenhum outro teste nem em dados/reservas.json, para não
+// interferir nos cenários de consultar_disponibilidade (dia 03/11).
+
+const DIA4 = (hora: string) => `2026-11-04T${hora}:00-03:00`;
+const VERSAO = readFileSync(path.join(dados, 'politica-de-uso.md'), 'utf8').split(/\r?\n/, 1)[0].replace(/^versao:\s*/, '').trim();
+
+async function reservar(sala: string, inicio: string, fim: string, responsavel = 'Doc', op: Opcoes = {}) {
+  return mcp('tools/call', { name: 'reservar_sala', arguments: { sala, inicio, fim, responsavel } }, { nome: 'reservar_sala', ...op });
+}
+
+test('A: tools/list traz as três tools; reservar_sala com os 4 argumentos obrigatórios', async () => {
+  const { corpo } = await mcp('tools/list');
+  assert.deepEqual(corpo.result.tools.map((t: any) => t.name).sort(), ['consultar_disponibilidade', 'listar_salas', 'reservar_sala']);
+  const tool = corpo.result.tools.find((t: any) => t.name === 'reservar_sala');
+  assert.equal(tool.inputSchema.type, 'object');
+  assert.deepEqual([...tool.inputSchema.required].sort(), ['fim', 'inicio', 'responsavel', 'sala']);
+  for (const campo of ['sala', 'inicio', 'fim', 'responsavel']) assert.equal(tool.inputSchema.properties[campo].type, 'string');
+  assert.deepEqual(
+    Object.keys(tool.outputSchema.properties).sort(),
+    ['fim', 'inicio', 'motivo', 'politica', 'reserva', 'reservado', 'responsavel', 'sala'],
+  );
+});
+
+test('B + C: reserva válida conclui com os 8 campos e a consulta seguinte já a enxerga', async () => {
+  const { status, corpo } = await reservar('sala-aquario', DIA4('09:00'), DIA4('10:00'), 'Doc');
+  assert.equal(status, 200);
+  const r = corpo.result;
+  assert.equal(r.resultType, 'complete');
+  assert.notEqual(r.isError, true);
+  const sc = r.structuredContent;
+  assert.match(sc.reserva, /^res-\d{4}$/);
+  assert.deepEqual(sc, {
+    reserva: sc.reserva,
+    reservado: true,
+    sala: 'sala-aquario',
+    inicio: DIA4('09:00'),
+    fim: DIA4('10:00'),
+    responsavel: 'Doc',
+    politica: VERSAO,
+    motivo: null,
+  });
+  assert.equal(r.content[0].text, JSON.stringify(sc, null, 2));
+
+  const consulta = await consultar('sala-aquario', DIA4('09:00'), DIA4('10:00'));
+  assert.deepEqual(consulta.corpo.result.structuredContent, {
+    sala: 'sala-aquario',
+    livre: false,
+    conflitos: [{ id: sc.reserva, inicio: DIA4('09:00'), fim: DIA4('10:00'), responsavel: 'Doc' }],
+  });
+});
+
+test('D: reservas sequenciais recebem ids distintos e crescentes, e todas continuam na agenda', async () => {
+  const a = (await reservar('sala-porao', DIA4('10:00'), DIA4('11:00'), 'Marty')).corpo.result.structuredContent;
+  const b = (await reservar('sala-porao', DIA4('11:00'), DIA4('12:00'), 'Jennifer')).corpo.result.structuredContent; // adjacente: não conflita
+  assert.equal(a.reservado, true);
+  assert.equal(b.reservado, true);
+  assert.notEqual(a.reserva, b.reserva);
+  assert.equal(Number(b.reserva.slice(4)), Number(a.reserva.slice(4)) + 1);
+  const consulta = await consultar('sala-porao', DIA4('10:00'), DIA4('12:00'));
+  assert.deepEqual(consulta.corpo.result.structuredContent.conflitos.map((c: any) => c.id), [a.reserva, b.reserva]);
+});
+
+const ERROS_RESERVA: Array<[string, string, string, string, string]> = [
+  ['E: sala inexistente', 'sala-delorean', DIA4('09:00'), DIA4('10:00'), 'Sala inexistente: sala-delorean'],
+  ['F: intervalo invertido', 'sala-mirante', DIA4('10:00'), DIA4('09:00'), 'Intervalo invalido: fim deve ser posterior a inicio'],
+  ['G: fora da janela', 'sala-mirante', DIA4('07:00'), DIA4('08:00'), 'Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00'],
+  ['H: duração acima de 2h', 'sala-mirante', DIA4('09:00'), DIA4('12:00'), 'Duracao acima do limite: a politica permite no maximo 2 horas'],
+];
+for (const [nome, sala, inicio, fim, mensagem] of ERROS_RESERVA) {
+  test(`${nome} → isError com a mensagem exata e nenhuma reserva criada`, async () => {
+    const { status, corpo } = await reservar(sala, inicio, fim);
+    assert.equal(status, 200);
+    assert.equal(corpo.result.isError, true);
+    assert.equal(corpo.result.content[0].text, mensagem);
+    assert.equal(corpo.result.structuredContent, undefined);
+    if (sala === 'sala-mirante') {
+      const c = await consultar('sala-mirante', DIA4('08:00'), DIA4('10:00'));
+      assert.deepEqual(c.corpo.result.structuredContent.conflitos, []);
+    }
+  });
+}
+
+test('I (PROVISÓRIO até o Passo 7): conflito não cria reserva nem corrompe a agenda', async () => {
+  // Isto NÃO é o comportamento final: no Passo 7 o conflito vira input_required (MRTR).
+  const antes = (await consultar('sala-garagem', '2026-11-03T13:00:00-03:00', '2026-11-03T15:00:00-03:00')).corpo.result.structuredContent;
+  const { corpo } = await reservar('sala-garagem', '2026-11-03T14:00:00-03:00', '2026-11-03T15:00:00-03:00', 'Biff');
+  assert.equal(corpo.result.isError, true);
+  assert.match(corpo.result.content[0].text, /provisorio/);
+  assert.notEqual(corpo.result.resultType, 'input_required');
+  assert.equal(corpo.result.requestState, undefined);
+  const depois = (await consultar('sala-garagem', '2026-11-03T13:00:00-03:00', '2026-11-03T15:00:00-03:00')).corpo.result.structuredContent;
+  assert.deepEqual(depois, antes);
+});
+
+test('J: reservar_sala sem protocolVersion → HTTP 400 e -32602; Mcp-Name divergente → -32020', async () => {
+  const a = await reservar('sala-aquario', DIA4('15:00'), DIA4('16:00'), 'Doc', { omitir: 'protocolVersion' });
+  assert.equal(a.status, 400);
+  assert.equal(a.corpo.error?.code, -32602);
+  const b = await reservar('sala-aquario', DIA4('15:00'), DIA4('16:00'), 'Doc', { nome: 'listar_salas' });
+  assert.equal(b.status, 400);
+  assert.equal(b.corpo.error?.code, -32020);
+  // Nenhuma das duas chegou à tool: o horário continua livre.
+  assert.equal((await consultar('sala-aquario', DIA4('15:00'), DIA4('16:00'))).corpo.result.structuredContent.livre, true);
+});
+
+test('reinício: um processo novo só conhece as reservas de dados/reservas.json', async () => {
+  const criada = (await reservar('sala-fusca', DIA4('16:00'), DIA4('17:00'), 'Doc')).corpo.result.structuredContent;
+  assert.equal(criada.reservado, true);
+  const outro = await subirServidor();
+  try {
+    const consulta = await mcp(
+      'tools/call',
+      { name: 'consultar_disponibilidade', arguments: { sala: 'sala-fusca', inicio: DIA4('16:00'), fim: DIA4('17:00') } },
+      { nome: 'consultar_disponibilidade', url: outro.url },
+    );
+    assert.equal(consulta.corpo.result.structuredContent.livre, true);
+    const inicial = await mcp(
+      'tools/call',
+      { name: 'consultar_disponibilidade', arguments: { sala: 'sala-garagem', inicio: '2026-11-03T14:00:00-03:00', fim: '2026-11-03T15:00:00-03:00' } },
+      { nome: 'consultar_disponibilidade', url: outro.url },
+    );
+    assert.deepEqual(inicial.corpo.result.structuredContent.conflitos.map((c: any) => c.id), ['res-0001']);
+    assert.match(outro.saida.texto, /reservas=2 /);
+  } finally {
+    outro.processo.kill();
+  }
+});
+
+test('politica vem do arquivo: com outra versão em DADOS_DIR, a reserva traz a outra versão', async () => {
+  const pasta = mkdtempSync(path.join(tmpdir(), 'dados-'));
+  cpSync(dados, pasta, { recursive: true });
+  const original = readFileSync(path.join(pasta, 'politica-de-uso.md'), 'utf8');
+  writeFileSync(path.join(pasta, 'politica-de-uso.md'), original.replace(/^versao:[^\r\n]*/, 'versao: 2099-12-31'));
+  const outro = await subirServidor({ DADOS_DIR: pasta });
+  try {
+    const { corpo } = await mcp(
+      'tools/call',
+      { name: 'reservar_sala', arguments: { sala: 'sala-aquario', inicio: DIA4('09:00'), fim: DIA4('10:00'), responsavel: 'Doc' } },
+      { nome: 'reservar_sala', url: outro.url },
+    );
+    assert.equal(corpo.result.structuredContent.politica, '2099-12-31');
+  } finally {
+    outro.processo.kill();
+    rmSync(pasta, { recursive: true, force: true });
+  }
+});
+
 // ---------- resources ----------
 
 test('resources/list descobre politica://uso com nome e mimeType', async () => {
@@ -316,21 +476,22 @@ test('stderr registra método, id e traceparent de cada operação', async () =>
     ['resources/list', {}],
     ['resources/read', { uri: 'politica://uso' }, 'politica://uso'],
     ['tools/call', { name: 'consultar_disponibilidade', arguments: { sala: 'sala-garagem', inicio: DIA('14:00'), fim: DIA('15:00') } }, 'consultar_disponibilidade'],
+    ['tools/call', { name: 'reservar_sala', arguments: { sala: 'sala-delorean', inicio: DIA('09:00'), fim: DIA('10:00'), responsavel: 'Doc' } }, 'reservar_sala'],
   ];
   for (const [metodo, params, nome] of chamadas) {
     const { id } = await mcp(metodo, params, { nome, traceparent: TRACEPARENT });
     assert.ok(
-      stderr.includes(`[mcp] recv method=${metodo} id=${id} name=${nome ?? '-'} traceparent=${TRACEPARENT}`),
+      saidaPrincipal.texto.includes(`[mcp] recv method=${metodo} id=${id} name=${nome ?? '-'} traceparent=${TRACEPARENT}`),
       `log ausente para ${metodo} id=${id}`,
     );
   }
 
   // Sem traceparent no _meta: o log mostra "-", nada é inventado.
   const { id } = await mcp('resources/list');
-  assert.ok(stderr.includes(`[mcp] recv method=resources/list id=${id} name=- traceparent=-`));
+  assert.ok(saidaPrincipal.texto.includes(`[mcp] recv method=resources/list id=${id} name=- traceparent=-`));
 
   // Request inválido também aparece, seguido da rejeição.
   const invalido = await mcp('resources/read', { uri: 'politica://uso' }, { nome: 'politica://uso', omitir: 'clientCapabilities', traceparent: TRACEPARENT });
-  assert.ok(stderr.includes(`[mcp] recv method=resources/read id=${invalido.id} name=politica://uso traceparent=${TRACEPARENT}`));
-  assert.match(stderr, /\[mcp\] rejeitado .*clientCapabilities/);
+  assert.ok(saidaPrincipal.texto.includes(`[mcp] recv method=resources/read id=${invalido.id} name=politica://uso traceparent=${TRACEPARENT}`));
+  assert.match(saidaPrincipal.texto, /\[mcp\] rejeitado .*clientCapabilities/);
 });

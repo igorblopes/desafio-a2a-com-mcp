@@ -144,7 +144,8 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │   ├── tsconfig.json
 │   ├── test/
 │   │   ├── contrato.test.ts     testes de contrato: sobe o processo real e conversa por HTTP (node:test)
-│   │   └── regras.test.ts       testes unitários das regras de domínio (funções puras)
+│   │   ├── regras.test.ts       testes unitários das regras de domínio (funções puras)
+│   │   └── agenda.test.ts       testes unitários da agenda em memória, dos ids e da versão da política
 │   └── src/
 │       ├── main.ts              sobe node:http na 7301, loga cada request no stderr, delega a handler.fetch
 │       ├── config.ts            lê e valida env (porta, DADOS_DIR, REQUEST_STATE_SECRET ≥ 32 bytes, TTL)
@@ -760,3 +761,57 @@ No agente, o primeiro caso é um defeito de integração; o segundo vira `TASK_S
 Testes de mutação manuais confirmaram que os testes pegam erros reais: trocar `<` por `<=` no conflito derrubou 3 testes, fechar a janela em `< 20:00` derrubou 2, e usar o fuso da máquina na janela derrubou 7.
 
 Validador oficial com só o servidor MCP no ar: **10/36**. Passam 02 a 08 e 10 a 12. A 01 espera `reservar_sala`; a 09 chama `reservar_sala` (a mesma regra já responde certo via `consultar_disponibilidade`); as 13 a 20 dependem de `reservar_sala` e do MRTR; as 21 a 36 dependem do agente.
+
+### Passo 6: `reservar_sala` no caminho feliz (11/11/2026)
+
+| Item | Situação |
+|---|---|
+| `tools/reservar-sala.ts` | ✅ caminho feliz; conflito com resposta **provisória** |
+| `dominio/agenda.ts`: `adicionarReserva`, `proximoIdDeReserva`, `DataIso` compartilhado | ✅ |
+| `recursos/politica.ts`: `extrairVersao` / `versaoDaPolitica` | ✅ |
+| `test/agenda.test.ts` (14) + `test/contrato.test.ts` (44) + `test/regras.test.ts` (35) | ✅ `npm test`: 93/93 |
+| MRTR (`input_required`, elicitation, `requestState`), cálculo de alternativas | ⏳ Passo 7 |
+
+**Contrato de `reservar_sala`** (o mesmo de `exemplos/wire/01`, `02`, `04` e `11`):
+
+- Entrada: `{ sala: string, inicio: date-time com offset, fim: date-time com offset, responsavel: string }`, os quatro obrigatórios, sem campos extras.
+- Saída (`ReservaOut`): as **oito chaves vêm sempre**, `{ reserva, reservado, sala, inicio, fim, responsavel, politica, motivo }`. As que não se aplicam vão como `null` (no Passo 7, a recusa usa `reservado: false` e `motivo: "recusado"`, como em `wire/11`).
+- Caminho feliz: `resultType: complete`, `isError: false`, `structuredContent` com `reservado: true` e `motivo: null`, e o mesmo JSON (indentado com 2 espaços) em `content[0].text`, como em `wire/02`.
+
+**Fluxo.** `validarPedido` (sala → intervalo → janela → duração; a mesma função e as mesmas mensagens de `consultar_disponibilidade`) → `conflitos(reservasDaSala(sala))` → sem conflito: `adicionarReserva` → resposta. Não há `await` entre a checagem de conflito e a gravação. Como o Node executa um handler por vez até o próximo `await`, a sequência é atômica dentro do processo e duas chamadas simultâneas não reservam o mesmo horário.
+
+**Ids.** `proximoIdDeReserva` = maior número `res-NNNN` já presente na agenda + 1, com 4 dígitos (acima de 9999 vira `res-10000`, sem colisão). O cálculo usa a lista inteira (iniciais e criadas), então não colide com nenhuma das duas, e é determinístico: num processo novo, a primeira reserva é sempre `res-0003`, como em `wire/02`. O validador não exige formato, só ids distintos (verificação 33); seguimos o padrão do starter, e UUID não seria necessário.
+
+**Memória compartilhada.** `agenda.ts` é um singleton de módulo: uma única lista, iniciada com `dados/reservas.json` e lida e escrita pelas duas tools. O arquivo nunca é reescrito, e reiniciar o processo volta ao conteúdo original. As factories do `McpServer` são criadas por request, mas todas importam o mesmo módulo.
+
+**Versão da política.** `recursos/politica.ts` extrai a versão da linha `versao: <valor>` (aceitando CRLF) ao subir, e o processo não sobe sem ela. Um teste sobe o servidor com uma cópia de `dados/` cuja política diz `versao: 2099-12-31` e confere que a reserva traz `2099-12-31`: é isso que prova que a versão não está fixada no código.
+
+**Conflito: comportamento PROVISÓRIO.** Isolado em `respostaProvisoriaDeConflito`:
+
+- a resposta é `isError: true` com o texto `Conflito de horario: <sala> ja reservada no intervalo (<ids>). [provisorio: MRTR no Passo 7]`;
+- nenhuma reserva é criada;
+- não há elicitation, `requestState` nem a mensagem `Sem alternativas disponiveis no intervalo`, que só vale quando o cálculo real de alternativas não acha nenhuma.
+
+No Passo 7, essa função é substituída pelo MRTR.
+
+**O que o MRTR (Passo 7) reaproveita:** `validarPedido`, `conflitos` e `reservasDaSala` (para decidir quando pedir input e para calcular as alternativas, que precisam estar livres no intervalo), `adicionarReserva` (o retry aceito grava exatamente como o caminho feliz), `resultadoReservado` e `ReservaOut` (a resposta final do retry é a mesma de `wire/04`) e `versaoDaPolitica`.
+
+**Testes.** `npm test` (93):
+
+- `agenda.test.ts`: ids, gravação, visibilidade, reservas iniciais preservadas, pedido inválido ou em conflito que não grava, arquivo intocado e versão (LF/CRLF);
+- `contrato.test.ts`: cenários A a J por HTTP, mais reinício (um segundo processo só conhece as reservas do arquivo) e a versão vinda de `DADOS_DIR`.
+
+Os testes de reserva usam o dia 04/11, para não interferir nos cenários de consulta do dia 03.
+
+Mutações manuais (feitas no ambiente de nuvem) derrubaram testes como esperado:
+
+| Mutação | Testes que falharam |
+|---|---|
+| Pular a checagem de conflito | 1 |
+| Gravar numa cópia da lista | 4 |
+| Id por `length + 1` | 3 |
+| Versão fixada no código | 1 |
+
+**Validador.** O validador altera a agenda: hoje a verificação 20 cria uma reserva (a partir do Passo 7, a 18 também), de modo que só a primeira execução numa instância recém-iniciada parte dos dados originais. Numa instância nova: **12/36**. Passam 01 a 12. As 13 a 20 dependem do MRTR e as 21 a 36 do agente. Uma segunda execução sobre o mesmo processo também dá 12/36 (conferido no ambiente de nuvem).
+
+**Comandos.** `npm start`, `npm test` e `python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301` (com o servidor recém-iniciado).

@@ -5,11 +5,8 @@
 //   JSON em texto, como listar_salas. A consulta não altera a agenda.
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod';
-import { listarSalas, reservasDaSala } from '../dominio/agenda.ts';
+import { DataIso, listarSalas, reservasDaSala } from '../dominio/agenda.ts';
 import { conflitos, validarPedido } from '../dominio/regras.ts';
-
-// Exige offset explícito (Z ou ±HH:MM): sem ele, o instante dependeria do fuso da máquina.
-const DataIso = z.iso.datetime({ offset: true }).describe('ISO 8601 com offset, ex.: 2026-11-03T14:00:00-03:00');
 
 // Forma do contrato: exemplos/wire/01-tools-list.json (Disponibilidade / ConflitoOut).
 const Conflito = z.object({ id: z.string(), inicio: z.string(), fim: z.string(), responsavel: z.string() });
