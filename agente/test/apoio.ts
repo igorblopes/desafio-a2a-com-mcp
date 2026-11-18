@@ -1,6 +1,7 @@
-// Apoio dos testes de integração: sobe o servidor MCP REAL como outro
-// processo (o mesmo `node --import tsx src/main.ts` do npm start) e conversa
-// com ele só por HTTP. Nada de servidor-mcp/ é importado.
+// Apoio dos testes de integração: sobe o servidor MCP REAL (e, nos testes
+// A2A, o agente REAL) como outros processos (o mesmo `node --import tsx
+// src/main.ts` do npm start) e conversa com eles só por HTTP. Nada de
+// servidor-mcp/ é importado.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -12,6 +13,7 @@ import { ClienteMcp } from '../src/mcp/cliente.ts';
 import { fetchObservado, type RequestObservado } from '../src/mcp/observacao.ts';
 
 export const DIR_DO_SERVIDOR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'servidor-mcp');
+export const DIR_DO_AGENTE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
 export const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
 
@@ -31,7 +33,7 @@ export function portaLivre(): Promise<number> {
 export interface ServidorDeTeste {
   url: URL;
   porta: number;
-  /** stderr acumulado do servidor (os logs "[mcp] recv ..."). */
+  /** stderr acumulado do processo (os logs "[mcp] recv ..." ou "[a2a] ..."). */
   saida: { texto: string };
   processo: ChildProcess;
   parar(): Promise<void>;
@@ -39,34 +41,43 @@ export interface ServidorDeTeste {
 
 export async function subirServidor(env: Record<string, string> = {}): Promise<ServidorDeTeste> {
   const porta = env.MCP_PORT ? Number(env.MCP_PORT) : await portaLivre();
+  return subirProcesso(DIR_DO_SERVIDOR, '[mcp] pronto', new URL(`http://localhost:${porta}/mcp`), porta, {
+    REQUEST_STATE_SECRET: randomBytes(32).toString('hex'), // só desta execução
+    REQUEST_STATE_TTL_SECONDS: '',
+    ...env,
+    MCP_PORT: String(porta),
+  });
+}
+
+/** Sobe o agente A2A REAL (src/main.ts, o mesmo do npm start) em outro processo. `url` é a base (http://localhost:porta). */
+export async function subirAgente(mcp: URL, env: Record<string, string> = {}): Promise<ServidorDeTeste> {
+  const porta = env.A2A_PORT ? Number(env.A2A_PORT) : await portaLivre();
+  return subirProcesso(DIR_DO_AGENTE, '[a2a] pronto', new URL(`http://localhost:${porta}`), porta, { MCP_URL: mcp.href, ...env, A2A_PORT: String(porta), A2A_PUBLIC_URL: '' });
+}
+
+async function subirProcesso(cwd: string, pronto: string, url: URL, porta: number, env: Record<string, string>): Promise<ServidorDeTeste> {
   const processo = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
-    cwd: DIR_DO_SERVIDOR,
-    env: {
-      ...process.env,
-      REQUEST_STATE_SECRET: randomBytes(32).toString('hex'), // só desta execução
-      REQUEST_STATE_TTL_SECONDS: '',
-      ...env,
-      MCP_PORT: String(porta),
-    },
+    cwd,
+    env: { ...process.env, TRACEPARENT: '', ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   const saida = { texto: '' };
   await new Promise<void>((resolve, reject) => {
-    const limite = setTimeout(() => reject(new Error(`servidor não subiu:\n${saida.texto}`)), 15000);
+    const limite = setTimeout(() => reject(new Error(`processo não subiu:\n${saida.texto}`)), 15000);
     processo.stderr!.on('data', (parte: Buffer) => {
       saida.texto += parte.toString('utf8');
-      if (saida.texto.includes('[mcp] pronto')) {
+      if (saida.texto.includes(pronto)) {
         clearTimeout(limite);
         resolve();
       }
     });
     processo.once('exit', (c) => {
       clearTimeout(limite);
-      reject(new Error(`servidor saiu (${c}):\n${saida.texto}`));
+      reject(new Error(`processo saiu (${c}):\n${saida.texto}`));
     });
   });
   return {
-    url: new URL(`http://localhost:${porta}/mcp`),
+    url,
     porta,
     saida,
     processo,
@@ -96,4 +107,23 @@ export async function iniciarHost(url: URL, ctx: ContextoDeExecucao = {}): Promi
   const fio: RequestObservado[] = [];
   const host = await HostMcp.iniciar({ url, fetch: fetchObservado((r) => fio.push(r)) }, ctx);
   return { host, fio };
+}
+
+/** Um traceparent válido com trace-id aleatório: cada teste rastreia só os próprios requests. */
+export function novoTraceparent(): { traceparent: string; traceId: string } {
+  const traceId = randomBytes(16).toString('hex');
+  return { traceparent: `00-${traceId}-${randomBytes(8).toString('hex')}-01`, traceId };
+}
+
+/** POST JSON-RPC em /a2a. Devolve status HTTP e corpo já lido. */
+export async function rpc(base: URL, corpo: unknown, headers: Record<string, string> = {}): Promise<{ http: number; corpo: any; texto: string }> {
+  const r = await fetch(new URL('/a2a', base), { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: typeof corpo === 'string' ? corpo : JSON.stringify(corpo) });
+  const texto = await r.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(texto);
+  } catch {
+    json = undefined;
+  }
+  return { http: r.status, corpo: json, texto };
 }

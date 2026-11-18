@@ -163,19 +163,28 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │       └── dominio/
 │           ├── agenda.ts             carrega dados/, guarda reservas em memória, gera res-NNNN
 │           └── regras.ts             validações, conflito, alternativas, mensagens exatas (funções puras)
-└── agente/                      (✅ = já existe: Passos 8 e 9; o resto é planejado)
+└── agente/                      (✅ = já existe: Passos 8 a 10; o resto é planejado)
     ├── package.json             ✅
     ├── package-lock.json        ✅
     ├── tsconfig.json            ✅
     ├── src/
-    │   ├── main.ts              express na 7300: card, /a2a, middlewares (A2A-Version, traceparent)
-    │   ├── config.ts            ✅ MCP_URL, versão e capabilities do cliente (+ porta e A2A_PUBLIC_URL depois)
-    │   ├── card.ts              Agent Card v1.0 (espelho de exemplos/wire/07)
-    │   ├── executor.ts          AgentExecutor do SDK A2A: recebe mensagem e publica estado/artifact
-    │   ├── pedido.ts            parser do texto fixo; não é regra de domínio, é formato de entrada
-    │   ├── ponte.ts             coordenador MCP ↔ A2A (seção 9); consome o Host
-    │   ├── retomadas.ts         Map<taskId, ContextoRetomada>, privado, nunca serializado para fora
-    │   ├── trace.ts             ✅ parse/validação de traceparent e span filho (+ AsyncLocalStorage depois)
+    │   ├── main.ts              ✅ processo A2A na 7300 (Passo 10): monta config, Host, Tasks e express
+    │   ├── config.ts            ✅ MCP_URL, versão e capabilities do cliente MCP
+    │   ├── a2a/                 ✅ servidor A2A (Passo 10)
+    │   │   ├── config.ts        ✅ A2A_PORT (7300) e A2A_PUBLIC_URL
+    │   │   ├── card.ts          ✅ Agent Card v1.0 (espelho de exemplos/wire/07)
+    │   │   ├── servidor.ts      ✅ express: card, /a2a, envelope JSON-RPC, A2A-Version, -32700
+    │   │   ├── manipulador.ts   ✅ DefaultRequestHandler do SDK; métodos fora do escopo → -32004
+    │   │   ├── executor.ts      ✅ AgentExecutor: Task SUBMITTED → WORKING → COMPLETED/FAILED
+    │   │   ├── reserva.ts       ✅ caso de uso "reservar" sobre o Host; traduz os 6 desfechos
+    │   │   ├── mensagens.ts     ✅ Message, TaskStatus e Artifact no formato do SDK
+    │   │   └── tarefas/
+    │   │       ├── estados.ts   ✅ máquina de estados explícita; terminais protegidos
+    │   │       ├── repositorio.ts ✅ TaskStore em memória que recusa transição inválida
+    │   │       └── pedido.ts    ✅ parser do texto fixo (formato de entrada, não regra de domínio)
+    │   ├── ponte.ts             (Passo 11) retomada da Task com a escolha do usuário
+    │   ├── retomadas.ts         (Passo 11) Map<taskId, Continuacao>, privado, nunca serializado
+    │   ├── trace.ts             ✅ parse/validação de traceparent e span filho
     │   ├── demo.ts              ✅ demonstração de terminal; consome só o Host (Passo 9)
     │   ├── host/                ✅ Host MCP (Passo 9)
     │   │   ├── host.ts          ✅ HostMcp: ciclo de vida, descoberta, política, executar, continuar
@@ -190,7 +199,7 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
     │       ├── mrtr.ts          ✅ lê inputRequests, valida respostas contra o requestedSchema, monta inputResponses
     │       ├── politica.ts      ✅ URI da política e extração da versão (\r?\n)
     │       └── observacao.ts    ✅ fetch que registra o tráfego (testes e demo)
-    └── test/                    ✅ unidade.test.ts, cliente.test.ts, host.test.ts, apoio.ts
+    └── test/                    ✅ unidade, cliente, host, a2a-unidade, a2a (integração) + apoio.ts
 ```
 
 Por que essa granularidade:
@@ -1254,3 +1263,130 @@ npm run demo -- --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902
 ```
 
 A demo continua alterando a agenda. Reinicie o servidor antes de rodar o validador.
+
+### Passo 10: servidor A2A e Tasks (18/11/2026)
+
+| Item | Situação |
+|---|---|
+| `src/main.ts` (processo na 7300) e `src/a2a/` (card, servidor, manipulador, executor, reserva, mensagens, tarefas/) | ✅ |
+| `GET /.well-known/agent-card.json` igual a `exemplos/wire/07` (só a URL vem de `A2A_PUBLIC_URL`) | ✅ |
+| `POST /a2a`: JSON-RPC 2.0 com `SendMessage` e `GetTask` | ✅ |
+| Máquina de estados explícita, terminais protegidos, histórico e artifact `reserva` | ✅ |
+| Caminho feliz pelo Host MCP, falhas MCP como `FAILED`, `traceparent` propagado | ✅ |
+| `test/a2a-unidade.test.ts` (12) + `test/a2a.test.ts` (21, dois processos reais) | ✅ `npm test`: 92/92 (59 anteriores + 33) |
+| Regressão | ✅ `servidor-mcp`: 135/135; validador **29/36** |
+| Conflito (`input_required`) | `FAILED` explícito, por decisão do Igor; a escolha de alternativa é o Passo 11 |
+
+**Duas camadas no mesmo processo.** O agente agora tem uma borda A2A (para quem pede a reserva) e, atrás dela, o Host MCP do Passo 9 (para quem sabe reservar). A borda não conhece tools, `_meta` nem `requestState`. O Host não conhece Tasks, estados A2A nem artifacts. Quem liga as duas é `reserva.ts`, que transforma um pedido em chamadas ao Host e cada um dos 6 desfechos em um `Desfecho` (`concluida` ou `falhou`). Nenhuma regra de salas foi copiada para o agente: janela, duração, conflito e sala inexistente continuam só no servidor MCP, e o agente repassa a mensagem dele.
+
+**SDK, não um dispatcher à mão.** O `@a2a-js/sdk` 1.3.0 já estava na stack desde o Passo 2 (decisão D9). Ele faz o parse do JSON-RPC, o roteamento por método, a criação da Task, o histórico e a recusa de `SendMessage` em Task terminal (`-32004`). Escrevi por cima só o que o SDK não faz do jeito do enunciado:
+
+| Peça nossa | Por quê |
+|---|---|
+| Validação de envelope em `servidor.ts` (`jsonrpc: "2.0"`, `method` texto, `id` texto/número/null) → `-32600` | o SDK devolvia `-32602` para envelope inválido |
+| Handler de `entity.parse.failed` → `-32700` com `id: null` | o `express.json()` devolvia uma página HTML 400 |
+| `A2A-Version: 1.0` quando o header falta | sem ele o SDK assume 0.3 e responde `-32009` (risco R2) |
+| `ManipuladorDaCentral` | cancelamento, listagem, streaming, resubscribe, push e card estendido viram `-32004` com mensagem clara |
+| `RepositorioDeTasks` (o `TaskStore`) | toda gravação passa por `exigirTransicao`: uma transição fora da tabela lança erro em vez de ser salva |
+
+**Máquina de estados.** Ela fica em `tarefas/estados.ts` como tabela, e é a única fonte do que é permitido:
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED: SendMessage sem taskId
+    SUBMITTED --> WORKING: executor começa
+    SUBMITTED --> FAILED
+    WORKING --> COMPLETED: reserva confirmada (artifact reserva)
+    WORKING --> FAILED: isError, conflito, protocolo, transporte, pedido mal formado
+    WORKING --> INPUT_REQUIRED: só no Passo 11
+    INPUT_REQUIRED --> WORKING: só no Passo 11 (escolha)
+    INPUT_REQUIRED --> CANCELED: só no Passo 11 (recusa)
+    COMPLETED --> [*]
+    FAILED --> [*]
+    CANCELED --> [*]
+```
+
+Hoje o executor nunca publica `INPUT_REQUIRED`. As transições dele já estão na tabela para que o Passo 11 não precise mexer na máquina. Os três terminais não têm saída. Se algo tentar gravar `COMPLETED → WORKING`, o repositório lança `TransicaoInvalida` e a Task fica como estava. O SDK, antes disso, já recusa o `SendMessage` com `-32004`, então são duas barreiras.
+
+**Uma Task, do começo ao fim.**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Cliente A2A
+    participant E as express /a2a<br/>(servidor.ts)
+    participant SDK as SDK A2A<br/>(manipulador + TaskStore)
+    participant X as ExecutorDeReservas
+    participant R as ServicoDeReserva
+    participant H as Host MCP
+    participant M as Servidor MCP :7301
+
+    U->>E: POST /a2a SendMessage (id=req-1)<br/>header traceparent
+    E->>E: envelope ok · A2A-Version 1.0 · log recv
+    E->>SDK: request JSON-RPC
+    SDK->>X: execute(requestContext, bus)
+    X->>SDK: Task SUBMITTED (taskId, contextId novos, history=[user])
+    X->>SDK: status WORKING
+    X->>X: lerPedido(texto) → sala, inicio, fim, responsavel
+    X->>R: reservar(pedido, {operacao: taskId, traceparent})
+    R->>H: descobrir()
+    H->>M: tools/list (span novo)
+    R->>H: lerPolitica()
+    H->>M: resources/read politica://uso (span novo)
+    R->>H: executar("reservar_sala", args)
+    H->>M: tools/call (span novo)
+    M-->>H: reservado true + structuredContent
+    H-->>R: {tipo: completo}
+    R-->>X: {tipo: concluida, reserva {..., politica}}
+    X->>SDK: artifact "reserva" (JSON)
+    X->>SDK: status COMPLETED "Reserva res-NNNN confirmada na sala-X."
+    X->>SDK: finished()
+    SDK-->>U: {jsonrpc, id: req-1, result: {task}}
+    U->>E: GetTask (id=req-2, params.id=taskId)
+    E->>SDK: GetTask
+    SDK-->>U: a mesma Task, sem nenhum request MCP
+```
+
+**Os quatro ids.** Eles aparecem juntos no fio e não se misturam:
+
+| Id | Quem cria | Vida | Exemplo |
+|---|---|---|---|
+| `id` do JSON-RPC | o cliente A2A | um request e a resposta dele | `req-1`, `42` |
+| `task.id` | o agente (SDK, UUID) | a Task inteira, através de vários requests | `ad36d832-…` |
+| `contextId` | o agente (SDK, UUID) | a conversa; no Passo 10 há uma Task por contexto | `6f1c…` |
+| `reserva` | o servidor MCP | a reserva na agenda; aparece no artifact | `res-0003` |
+
+Usar o `id` do JSON-RPC como id da Task quebraria no segundo request (o `GetTask` tem outro `id`). Os ids JSON-RPC do lado MCP (`1`, `2`, `3`…) são um quinto contador, do Cliente MCP, e não aparecem no A2A.
+
+**Artifact.** `name: "reserva"`, uma parte de texto com o JSON `{reserva, sala, inicio, fim, responsavel, politica}`. Os cinco primeiros campos vêm do `structuredContent` do `tools/call`, e `politica` vem da versão lida em `politica://uso` na mesma Task. O agente não calcula nem confere nada disso. Se a versão que o servidor devolve na reserva for diferente da lida no resource, ele só registra um aviso.
+
+**Erros, em três famílias.**
+
+| Família | Exemplo | Resposta A2A |
+|---|---|---|
+| Protocolo A2A | JSON quebrado, envelope inválido, método desconhecido, params inválidos, Task inexistente, Task terminal, método fora do escopo | erro JSON-RPC (`-32700`, `-32600`, `-32601`, `-32602`, `-32001`, `-32004`), sem Task |
+| Execução no domínio | `isError` do MCP (sala inexistente, fora da janela...), conflito, pedido fora do formato | Task `FAILED` com a mensagem; para `isError`, a mensagem exata do servidor |
+| Infraestrutura MCP | MCP fora do ar, erro de protocolo MCP, resposta inválida | Task `FAILED` (`Servidor de reservas indisponivel no momento.` ou `Erro de protocolo no servidor de reservas (codigo X).`); o agente segue no ar e reconecta na próxima Task |
+
+O processo A2A sobe sem o MCP: a conexão com o Host é preguiçosa (`ConexaoMcp`) e é descartada a cada falha de transporte.
+
+**`traceparent`.** O executor lê o header do request A2A (o SDK guarda os headers no estado do contexto), valida com `analisarTraceparent` e passa ao Host como `ctx.traceparent`. O Host gera um span filho por request MCP, com o mesmo trace-id. Sem header, ou com header inválido, nada é inventado: o MCP registra `traceparent=-`. Os logs do agente mostram `recv method=… id=… traceparent=…`, `task=… trace=… executando` e cada transição de estado.
+
+**Limitações conhecidas (de propósito).** Sem retomada (`INPUT_REQUIRED`), sem streaming, sem SSE, sem push, sem persistência (reiniciar o agente apaga as Tasks), sem autenticação e sem `ListTasks`/`CancelTask`. Na primeira Task há dois `tools/list` (o do `HostMcp.iniciar` e o do `descobrir`). É cosmético, e mantém "`tools/list` antes do `tools/call`" verdadeiro em todas as Tasks.
+
+**Como o Passo 11 estende isto.** Só muda o ramo `input_required` de `reserva.ts` e o começo de `executor.ts`:
+
+1. Em vez de `falhou/conflito`, `reserva.ts` devolve `{tipo: pausada, continuacao, pergunta}`. O executor publica `INPUT_REQUIRED` com a linha `alternativas:` e guarda a `Continuacao` num `Map<taskId, Continuacao>` privado (fora do `TaskStore`, que é serializado para o cliente: verificação 34).
+2. Um `SendMessage` com `taskId` de Task em `INPUT_REQUIRED` chega ao executor (o SDK só recusa os terminais). O executor lê a escolha, valida contra as opções sem chamar o MCP (verificação 29), passa a `WORKING` e chama `host.continuar(...)`.
+3. O desfecho volta pelo mesmo caminho de hoje: `COMPLETED` com artifact, `FAILED`, ou `CANCELED` na recusa.
+
+A máquina de estados, o repositório, o card, o servidor HTTP e os testes de hoje continuam valendo.
+
+**Comandos.**
+
+```powershell
+cd servidor-mcp; npm start          # terminal 1 (7301)
+cd agente; npm start                # terminal 2 (7300); sobe mesmo sem o MCP
+cd agente; npm test                 # 92 testes; sobe os dois processos sozinhos em portas livres
+python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 29/36
+```
