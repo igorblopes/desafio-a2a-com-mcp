@@ -1,5 +1,7 @@
-// Demonstração de terminal do cliente MCP (Passo 8). Não é o agente A2A:
-// aqui a "escolha do usuário" vem do teclado (ou de --escolha/--recusar/--cancelar).
+// Demonstração de terminal do Host MCP (Passos 8 e 9). Não é o agente A2A:
+// aqui quem decide a resposta da elicitation é a pessoa no teclado (ou
+// --escolha/--recusar/--cancelar). O script só CONSOME o Host: não fala MCP
+// diretamente, não monta request nem guarda requestState.
 //
 //   npm run demo                                   reserva simples (sala-aquario, 24/11 10h–11h)
 //   npm run demo -- --exemplo conflito             garagem 03/11 14h–15h (ocupada) → pergunta a alternativa
@@ -9,14 +11,17 @@
 //   ... --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 //
 // MCP_URL troca o endpoint (padrão http://localhost:7301/mcp).
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { lerConfig } from './config.ts';
-import { ClienteMcp } from './mcp/cliente.ts';
+import { HostMcp } from './host/host.ts';
+import { resumir } from './host/continuacao.ts';
+import type { ContextoDeExecucao } from './host/contexto.ts';
+import type { ResultadoDaOperacao } from './host/resultado.ts';
 import { ErroDeUso, ErroMcp } from './mcp/erros.ts';
-import { aceitar, cancelar, recusar, type PedidoDeEntrada, type RespostaDeEntrada } from './mcp/mrtr.ts';
+import type { PedidoDeEntrada, RespostaDeEntrada } from './mcp/mrtr.ts';
 import { fetchObservado } from './mcp/observacao.ts';
-import type { ResultadoDaTool } from './mcp/resultado.ts';
 import { analisarTraceparent } from './trace.ts';
 
 const EXEMPLOS = {
@@ -47,91 +52,106 @@ const pedido = {
   responsavel: a.responsavel ?? exemplo.responsavel,
 };
 if (a.traceparent && !analisarTraceparent(a.traceparent)) throw new Error(`--traceparent inválido: ${a.traceparent}`);
-const op = a.traceparent ? { traceparent: a.traceparent } : {};
+const respostaPorArgumento = a.escolha !== undefined || a.recusar || a.cancelar;
+
+// Contexto desta operação: um id lógico (no A2A será o taskId) e o trace, se informado.
+const ctx: ContextoDeExecucao = { operacao: `demo-${randomUUID().slice(0, 8)}`, ...(a.traceparent ? { traceparent: a.traceparent } : {}) };
 
 const titulo = (t: string) => console.log(`\n== ${t}`);
-const curto = (v: string) => (v.length > 24 ? `${v.slice(0, 12)}…(${v.length} caracteres)` : v);
 
-const { url } = lerConfig();
-let cliente: ClienteMcp | undefined;
+// Iterador de linhas (e não rl.question): funciona também com a entrada vinda de um pipe.
+let linhas: AsyncIterator<string> | undefined;
+let rl: ReturnType<typeof createInterface> | undefined;
+async function lerLinha(prompt: string): Promise<string> {
+  rl ??= createInterface({ input: process.stdin });
+  linhas ??= rl[Symbol.asyncIterator]();
+  process.stdout.write(prompt);
+  const lida = await linhas.next();
+  if (lida.done) throw new ErroDeUso('entrada encerrada sem uma escolha');
+  const linha = String(lida.value).trim();
+  console.log(linha);
+  return linha;
+}
 
-async function perguntar(p: PedidoDeEntrada): Promise<RespostaDeEntrada> {
-  const campo = p.campos.find((c) => c.opcoes);
-  if (a.recusar) return recusar();
-  if (a.cancelar) return cancelar();
-  if (!campo) throw new ErroDeUso(`a demo só sabe responder formulários com um campo enum (chave ${p.chave})`);
-  if (a.escolha) return aceitar(p, { [campo.nome]: a.escolha });
-  // Iterador de linhas (e não rl.question): funciona também com a entrada vinda de um pipe.
-  const rl = createInterface({ input: process.stdin });
-  const linhas = rl[Symbol.asyncIterator]();
-  try {
-    for (;;) {
-      campo.opcoes!.forEach((o, i) => console.log(`   ${i + 1}) ${o}`));
-      process.stdout.write(`   Escolha 1-${campo.opcoes!.length}, r = recusar, c = cancelar: `);
-      const lida = await linhas.next();
-      if (lida.done) throw new ErroDeUso('entrada encerrada sem uma escolha');
-      const linha = String(lida.value).trim();
-      console.log(linha);
-      if (linha === 'r') return recusar();
-      if (linha === 'c') return cancelar();
-      const valor = campo.opcoes![Number(linha) - 1] ?? linha;
-      try {
-        return aceitar(p, { [campo.nome]: valor });
-      } catch (e) {
-        console.log(`   ${(e as Error).message}`);
+/** A DECISÃO, fora do Host: argumento de linha de comando ou teclado. A validação fica com o Host. */
+async function decidir(p: PedidoDeEntrada): Promise<RespostaDeEntrada> {
+  if (a.recusar) return { action: 'decline' };
+  if (a.cancelar) return { action: 'cancel' };
+  const campo = p.campos.find((c) => c.opcoes) ?? p.campos[0];
+  if (!campo) throw new ErroDeUso(`a demo não sabe responder ao pedido ${p.chave}`);
+  if (a.escolha !== undefined) return { action: 'accept', content: { [campo.nome]: a.escolha } };
+  campo.opcoes?.forEach((o, i) => console.log(`   ${i + 1}) ${o}`));
+  const linha = await lerLinha(`   Escolha ${campo.opcoes ? `1-${campo.opcoes.length}` : campo.nome}, r = recusar, c = cancelar: `);
+  if (linha === 'r') return { action: 'decline' };
+  if (linha === 'c') return { action: 'cancel' };
+  return { action: 'accept', content: { [campo.nome]: campo.opcoes?.[Number(linha) - 1] ?? linha } };
+}
+
+function mostrar(r: ResultadoDaOperacao): void {
+  console.log(`   tipo=${r.tipo} operacao=${r.operacao}`);
+  switch (r.tipo) {
+    case 'completo':
+      console.log(JSON.stringify(r.estruturado, null, 2).replace(/^/gm, '   '));
+      break;
+    case 'erro_execucao':
+      console.log(`   isError: ${r.mensagem}`);
+      break;
+    case 'erro_protocolo':
+    case 'falha_transporte':
+      console.log(`   código=${r.codigo ?? '-'}: ${r.mensagem}`);
+      break;
+    case 'resposta_invalida':
+      console.log(`   nada foi enviado: ${r.problemas.join('; ')}`);
+      break;
+    case 'input_required':
+      for (const p of r.continuacao.pedidos) {
+        console.log(`   chave=${p.chave} método=${p.metodo} modo=${p.modo}`);
+        console.log(`   mensagem: ${p.mensagem}`);
+        for (const c of p.campos) console.log(`   campo ${c.nome} (${c.tipo}${c.obrigatorio ? ', obrigatório' : ''}) opções: ${c.opcoes?.join(', ') ?? '-'}`);
       }
-    }
-  } finally {
-    rl.close();
+      console.log(`   continuação: ${JSON.stringify(resumir(r.continuacao))}`);
+      break;
   }
 }
 
-function mostrar(r: ResultadoDaTool): void {
-  console.log(`   tipo=${r.tipo}`);
-  if (r.tipo === 'completo') console.log(JSON.stringify(r.estruturado, null, 2).replace(/^/gm, '   '));
-  if (r.tipo === 'erro_execucao') console.log(`   isError: ${r.mensagem}`);
-}
-
+let host: HostMcp | undefined;
 try {
-  cliente = await ClienteMcp.conectar({
-    url,
-    // Mostra cada request no fio: id JSON-RPC, método, headers espelho e traceparent.
-    fetch: fetchObservado((r) => {
-      const tp = (r.params?._meta as Record<string, unknown> | undefined)?.traceparent ?? '-';
-      console.log(`   → id=${JSON.stringify(r.id)} ${r.metodo} Mcp-Method=${r.headers['mcp-method']} Mcp-Name=${r.headers['mcp-name'] ?? '-'} MCP-Protocol-Version=${r.headers['mcp-protocol-version']} traceparent=${tp} http=${r.status}`);
-    }),
-  });
+  console.log(`MCP: ${lerConfig().url.href}  operação: ${ctx.operacao}  ${ctx.traceparent ? `trace-id: ${analisarTraceparent(ctx.traceparent)!.traceId}` : '(sem traceparent)'}`);
 
-  console.log(`MCP: ${url.href}${a.traceparent ? `  trace-id: ${analisarTraceparent(a.traceparent)!.traceId}` : '  (sem traceparent)'}`);
-
-  titulo('1. Descoberta (tools/list)');
-  for (const t of await cliente.descobrir(op)) {
-    console.log(`   ${t.name}(${Object.keys(t.inputSchema.properties ?? {}).join(', ')})${t.outputSchema ? ' → outputSchema' : ''}`);
+  titulo('1. Iniciar o Host (server/discover + tools/list)');
+  host = await HostMcp.iniciar(
+    {
+      url: lerConfig().url,
+      // Mostra cada request no fio: id JSON-RPC, método, headers espelho e traceparent.
+      fetch: fetchObservado((r) => {
+        const tp = (r.params?._meta as Record<string, unknown> | undefined)?.traceparent ?? '-';
+        console.log(`   → id=${JSON.stringify(r.id)} ${r.metodo} Mcp-Method=${r.headers['mcp-method']} Mcp-Name=${r.headers['mcp-name'] ?? '-'} MCP-Protocol-Version=${r.headers['mcp-protocol-version']} traceparent=${tp} http=${r.status}`);
+      }),
+    },
+    ctx,
+  );
+  for (const t of host.ferramentas()) {
+    console.log(`   catálogo: ${t.name}(${Object.keys(t.inputSchema.properties ?? {}).join(', ')})${t.outputSchema ? ' → outputSchema' : ''}`);
   }
 
   titulo('2. Política (resources/read politica://uso)');
-  const politica = await cliente.lerPolitica(op);
-  console.log(`   versão extraída: ${politica.versao}  (${politica.texto.length} caracteres de Markdown preservados)`);
+  const politica = await host.lerPolitica(ctx);
+  console.log(`   versão: ${politica.versao}  origem: ${politica.origem.uri} (${politica.origem.mimeType}, servidor ${politica.origem.servidor?.name ?? '-'})`);
 
-  titulo(`3. tools/call reservar_sala ${JSON.stringify(pedido)}`);
-  let resultado = await cliente.chamarTool('reservar_sala', pedido, op);
+  titulo(`3. executar reservar_sala ${JSON.stringify(pedido)}`);
+  let resultado = await host.executar('reservar_sala', pedido, ctx);
   mostrar(resultado);
 
-  while (resultado.tipo === 'input_required') {
-    const pausa = resultado;
-    titulo('4. input_required');
-    for (const p of pausa.pedidos) {
-      console.log(`   chave=${p.chave} método=${p.metodo} modo=${p.modo}`);
-      console.log(`   mensagem: ${p.mensagem}`);
-      for (const c of p.campos) console.log(`   campo ${c.nome} (${c.tipo}${c.obrigatorio ? ', obrigatório' : ''}) opções: ${c.opcoes?.join(', ') ?? '-'}`);
-    }
-    console.log(`   requestState: ${pausa.requestState ? curto(pausa.requestState) : '-'} (opaco: guardado e reenviado sem leitura)`);
+  let passo = 4;
+  while (resultado.tipo === 'input_required' || resultado.tipo === 'resposta_invalida') {
+    if (resultado.tipo === 'resposta_invalida' && respostaPorArgumento) break;
+    const continuacao = resultado.continuacao;
     const respostas: Record<string, RespostaDeEntrada> = {};
-    for (const p of pausa.pedidos) respostas[p.chave] = await perguntar(p);
-    titulo(`5. Retry (tools/call novo) inputResponses=${JSON.stringify(respostas)}`);
-    resultado = await cliente.continuar(pausa, respostas, op);
+    for (const p of continuacao.pedidos) respostas[p.chave] = await decidir(p);
+    titulo(`${passo++}. host.continuar com inputResponses=${JSON.stringify(respostas)}`);
+    resultado = await host.continuar(continuacao, respostas, ctx);
     mostrar(resultado);
-    if (resultado.tipo === 'input_required' && (a.escolha || a.recusar || a.cancelar)) {
+    if (resultado.tipo === 'input_required' && respostaPorArgumento) {
       console.log('   o servidor perguntou de novo (a sala escolhida foi ocupada nesse meio tempo)');
       break;
     }
@@ -140,12 +160,13 @@ try {
     const sc = resultado.estruturado as { politica?: string };
     if (sc.politica && sc.politica !== politica.versao) console.log(`   ATENÇÃO: versão no resultado (${sc.politica}) ≠ versão lida (${politica.versao})`);
   }
-  process.exitCode = resultado.tipo === 'completo' ? 0 : 1;
+  process.exitCode = resultado.tipo === 'completo' ? 0 : resultado.tipo === 'erro_execucao' ? 1 : 2;
 } catch (e) {
   if (e instanceof ErroMcp) console.error(`ErroMcp categoria=${e.categoria} código=${e.codigo ?? '-'}: ${e.message}`);
   else if (e instanceof ErroDeUso) console.error(`ErroDeUso (nada foi enviado): ${e.message}`);
   else console.error(e);
   process.exitCode = 2;
 } finally {
-  await cliente?.fechar();
+  rl?.close();
+  await host?.encerrar();
 }

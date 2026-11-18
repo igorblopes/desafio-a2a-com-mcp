@@ -6,7 +6,9 @@ import { ProtocolError, SdkError, SdkErrorCode, type InputRequiredResult } from 
 import { lerConfig, URL_MCP_PADRAO } from '../src/config.ts';
 import { analisarTraceparent, traceparentFilho } from '../src/trace.ts';
 import { extrairVersao } from '../src/mcp/politica.ts';
-import { aceitar, cancelar, continuacao, lerPedidos, problemasDoConteudo, recusar } from '../src/mcp/mrtr.ts';
+import { aceitar, cancelar, lerPedidos, montarInputResponses, problemasDasRespostas, problemasDoConteudo, recusar } from '../src/mcp/mrtr.ts';
+import { CatalogoDeFerramentas } from '../src/host/catalogo.ts';
+import { criarContinuacao, resumir } from '../src/host/continuacao.ts';
 import { classificar } from '../src/mcp/resultado.ts';
 import { ErroDeUso, ErroMcp, traduzirErro } from '../src/mcp/erros.ts';
 import { TRACEPARENT, TRACE_ID } from './apoio.ts';
@@ -79,17 +81,21 @@ describe('MRTR (unidade)', () => {
     assert.match(problemasDoConteudo(p!, { sala: 3 }).join(), /string/);
     assert.throws(() => aceitar(p!, { sala: 'sala-x' }), ErroDeUso);
   });
-  test('inputResponses usa a mesma chave e o requestState segue intacto', () => {
+  test('inputResponses usa a mesma chave recebida', () => {
     const pedidos = lerPedidos(INPUT_REQUIRED);
-    const c = continuacao(pedidos, INPUT_REQUIRED.requestState, { 'qualquer:chave': aceitar(pedidos[0]!, { sala: 'sala-fusca' }) });
-    assert.deepEqual(c, { inputResponses: { 'qualquer:chave': { action: 'accept', content: { sala: 'sala-fusca' } } }, requestState: 'v1.opaco.nao-mexer' });
+    const r = montarInputResponses(pedidos, { 'qualquer:chave': aceitar(pedidos[0]!, { sala: 'sala-fusca' }) });
+    assert.deepEqual(r, { 'qualquer:chave': { action: 'accept', content: { sala: 'sala-fusca' } } });
     assert.deepEqual(recusar(), { action: 'decline' });
     assert.deepEqual(cancelar(), { action: 'cancel' });
   });
-  test('chave faltando ou sobrando é recusada antes de enviar', () => {
+  test('chave faltando, sobrando, action desconhecida ou content ausente são problemas', () => {
     const pedidos = lerPedidos(INPUT_REQUIRED);
-    assert.throws(() => continuacao(pedidos, 'x', {}), /faltando: qualquer:chave/);
-    assert.throws(() => continuacao(pedidos, 'x', { 'qualquer:chave': recusar(), outra: recusar() }), /sobrando: outra/);
+    assert.match(problemasDasRespostas(pedidos, {}).join(), /ausente para: qualquer:chave/);
+    assert.match(problemasDasRespostas(pedidos, { 'qualquer:chave': recusar(), outra: recusar() }).join(), /não pedida: outra/);
+    assert.match(problemasDasRespostas(pedidos, { 'qualquer:chave': { action: 'talvez' } }).join(), /accept, decline ou cancel/);
+    assert.match(problemasDasRespostas(pedidos, { 'qualquer:chave': { action: 'accept' } }).join(), /precisa de content/);
+    assert.deepEqual(problemasDasRespostas(pedidos, { 'qualquer:chave': cancelar() }), []);
+    assert.throws(() => montarInputResponses(pedidos, {}), ErroDeUso);
   });
   test('pedido que não é form (ex.: url) não é respondido com accept', () => {
     const r = { ...INPUT_REQUIRED, inputRequests: { k: { method: 'elicitation/create', params: { mode: 'url', message: 'm', url: 'https://x' } } } } as unknown as InputRequiredResult;
@@ -120,5 +126,40 @@ describe('erros', () => {
   });
   test('fetch failed vira transporte', () => {
     assert.equal((traduzirErro(new TypeError('fetch failed')) as ErroMcp).categoria, 'transporte');
+  });
+});
+
+describe('Host (unidade)', () => {
+  const tool = { name: 'reservar', inputSchema: { type: 'object' as const, properties: { a: {}, b: {} }, required: ['a'] } };
+  test('catálogo: nada executa antes da descoberta; depois exige tool conhecida e required', () => {
+    const c = new CatalogoDeFerramentas();
+    assert.throws(() => c.exigir('reservar', { a: 1 }), /ainda não descoberta/);
+    c.substituir([tool]);
+    assert.equal(c.exigir('reservar', { a: 1 }).name, 'reservar');
+    assert.throws(() => c.exigir('outra', {}), /não oferece a ferramenta 'outra'/);
+    assert.throws(() => c.exigir('reservar', { b: 1 }), /obrigatórios ausentes em reservar: a/);
+  });
+  test('catálogo devolve cópias: quem lê não altera o schema guardado', () => {
+    const c = new CatalogoDeFerramentas();
+    c.substituir([tool]);
+    c.listar()[0]!.inputSchema.required!.push('b');
+    assert.deepEqual(c.obter('reservar')!.inputSchema.required, ['a']);
+    c.limpar();
+    assert.equal(c.descoberto, false);
+  });
+  const dados = { operacao: 'op-1', ferramenta: 'reservar', argumentos: { a: 1 }, pedidos: lerPedidos(INPUT_REQUIRED), requestState: 'v1.opaco.nao-mexer', traceparent: TRACEPARENT, rodada: 1 };
+  test('continuação é cópia congelada, serializável e sem vínculo com quem a criou', () => {
+    const original = structuredClone(dados);
+    const c = criarContinuacao(original);
+    original.argumentos.a = 2;
+    assert.equal(c.argumentos.a, 1);
+    assert.ok(Object.isFrozen(c) && Object.isFrozen(c.argumentos));
+    assert.throws(() => ((c as { requestState: string }).requestState = 'x'), TypeError);
+    assert.deepEqual(JSON.parse(JSON.stringify(c)), { formato: 1, ...dados });
+  });
+  test('resumir() não expõe o requestState', () => {
+    const texto = JSON.stringify(resumir(criarContinuacao(dados)));
+    assert.ok(!texto.includes('nao-mexer'));
+    assert.match(texto, /<opaco, 18 caracteres>/);
   });
 });

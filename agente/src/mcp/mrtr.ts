@@ -40,12 +40,6 @@ export type RespostaDeEntrada =
 
 export type RespostasDeEntrada = Record<string, RespostaDeEntrada>;
 
-/** O que vai em params (fora de arguments) no retry. */
-export interface Continuacao {
-  inputResponses: RespostasDeEntrada;
-  requestState: string | undefined;
-}
-
 type Objeto = Record<string, unknown>;
 const objeto = (v: unknown): v is Objeto => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -128,15 +122,43 @@ export const recusar = (): RespostaDeEntrada => ({ action: 'decline' });
 export const cancelar = (): RespostaDeEntrada => ({ action: 'cancel' });
 
 /**
- * Junta as respostas ao requestState recebido. Exige uma resposta para cada
- * chave pedida e nenhuma chave a mais. O requestState segue intacto.
+ * Confere um conjunto de respostas contra os pedidos: uma resposta para cada
+ * chave pedida, nenhuma chave a mais, `action` conhecida e, no accept,
+ * conteúdo válido para o formulário. Devolve a lista de problemas (vazia = ok).
  */
-export function continuacao(pedidos: PedidoDeEntrada[], requestState: string | undefined, respostas: RespostasDeEntrada): Continuacao {
-  const pedidas = new Set(pedidos.map((p) => p.chave));
-  const faltando = [...pedidas].filter((k) => !(k in respostas));
+export function problemasDasRespostas(pedidos: PedidoDeEntrada[], respostas: Record<string, unknown>): string[] {
+  const problemas: string[] = [];
+  const pedidas = new Map(pedidos.map((p) => [p.chave, p]));
+  const faltando = [...pedidas.keys()].filter((k) => !(k in respostas));
   const sobrando = Object.keys(respostas).filter((k) => !pedidas.has(k));
-  if (faltando.length || sobrando.length) {
-    throw new ErroDeUso(`inputResponses não corresponde a inputRequests (faltando: ${faltando.join(',') || '-'}; sobrando: ${sobrando.join(',') || '-'})`);
+  if (faltando.length) problemas.push(`resposta ausente para: ${faltando.join(', ')}`);
+  if (sobrando.length) problemas.push(`resposta para chave não pedida: ${sobrando.join(', ')}`);
+  for (const [chave, pedido] of pedidas) {
+    const r = respostas[chave];
+    if (r === undefined) continue;
+    const action = objeto(r) ? r.action : undefined;
+    if (action === 'decline' || action === 'cancel') continue;
+    if (action !== 'accept') {
+      problemas.push(`${chave}: action deve ser accept, decline ou cancel`);
+      continue;
+    }
+    if (!pedido.suportado) {
+      problemas.push(`${chave}: pedido não suportado (${pedido.metodo} modo=${pedido.modo ?? '-'})`);
+      continue;
+    }
+    const content = (r as { content?: unknown }).content;
+    if (!objeto(content)) {
+      problemas.push(`${chave}: accept precisa de content`);
+      continue;
+    }
+    problemas.push(...problemasDoConteudo(pedido, content).map((p) => `${chave}: ${p}`));
   }
-  return { inputResponses: respostas, requestState };
+  return problemas;
+}
+
+/** Valida e devolve as respostas prontas para `inputResponses`; lança ErroDeUso se houver problema. */
+export function montarInputResponses(pedidos: PedidoDeEntrada[], respostas: RespostasDeEntrada): RespostasDeEntrada {
+  const problemas = problemasDasRespostas(pedidos, respostas);
+  if (problemas.length) throw new ErroDeUso(`inputResponses inválido: ${problemas.join('; ')}`);
+  return respostas;
 }

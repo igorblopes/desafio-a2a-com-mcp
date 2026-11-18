@@ -163,7 +163,7 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │       └── dominio/
 │           ├── agenda.ts             carrega dados/, guarda reservas em memória, gera res-NNNN
 │           └── regras.ts             validações, conflito, alternativas, mensagens exatas (funções puras)
-└── agente/                      (✅ = existe desde o Passo 8; o resto é planejado)
+└── agente/                      (✅ = já existe: Passos 8 e 9; o resto é planejado)
     ├── package.json             ✅
     ├── package-lock.json        ✅
     ├── tsconfig.json            ✅
@@ -173,18 +173,24 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
     │   ├── card.ts              Agent Card v1.0 (espelho de exemplos/wire/07)
     │   ├── executor.ts          AgentExecutor do SDK A2A: recebe mensagem e publica estado/artifact
     │   ├── pedido.ts            parser do texto fixo; não é regra de domínio, é formato de entrada
-    │   ├── ponte.ts             coordenador MCP ↔ A2A (seção 9)
+    │   ├── ponte.ts             coordenador MCP ↔ A2A (seção 9); consome o Host
     │   ├── retomadas.ts         Map<taskId, ContextoRetomada>, privado, nunca serializado para fora
     │   ├── trace.ts             ✅ parse/validação de traceparent e span filho (+ AsyncLocalStorage depois)
-    │   ├── demo.ts              ✅ demonstração de terminal do cliente MCP (Passo 8)
+    │   ├── demo.ts              ✅ demonstração de terminal; consome só o Host (Passo 9)
+    │   ├── host/                ✅ Host MCP (Passo 9)
+    │   │   ├── host.ts          ✅ HostMcp: ciclo de vida, descoberta, política, executar, continuar
+    │   │   ├── catalogo.ts      ✅ catálogo vindo do tools/list; barra tool desconhecida e required ausente
+    │   │   ├── contexto.ts      ✅ ContextoDeExecucao { operacao?, traceparent? }
+    │   │   ├── continuacao.ts   ✅ Continuacao: valor congelado e serializável, resumir() sem o requestState
+    │   │   └── resultado.ts     ✅ ResultadoDaOperacao: seis desfechos
     │   └── mcp/
-    │       ├── cliente.ts       ✅ Client do SDK: conecta 1x, descobre, lê resource, tools/call genérico
-    │       ├── resultado.ts     ✅ completo × erro_execucao × input_required, com o resultado bruto
+    │       ├── cliente.ts       ✅ Client do SDK: só protocolo (listarTools, lerRecurso, chamarTool com retry)
+    │       ├── resultado.ts     ✅ completo × erro_execucao × input_required do protocolo, com o resultado bruto
     │       ├── erros.ts         ✅ ErroMcp (jsonrpc / transporte / resposta) e ErroDeUso
-    │       ├── mrtr.ts          ✅ lê inputRequests, valida a resposta, monta inputResponses
+    │       ├── mrtr.ts          ✅ lê inputRequests, valida respostas contra o requestedSchema, monta inputResponses
     │       ├── politica.ts      ✅ URI da política e extração da versão (\r?\n)
     │       └── observacao.ts    ✅ fetch que registra o tráfego (testes e demo)
-    └── test/                    ✅ unidade.test.ts, integracao.test.ts, apoio.ts
+    └── test/                    ✅ unidade.test.ts, cliente.test.ts, host.test.ts, apoio.ts
 ```
 
 Por que essa granularidade:
@@ -945,6 +951,8 @@ Mutações manuais (no ambiente de nuvem), cada uma derrubando testes:
 
 ### Passo 8: cliente MCP independente (11/11/2026)
 
+> **Atualizado no Passo 9.** O texto abaixo descreve o cliente como foi entregue no Passo 8. No Passo 9, `descobrir`, `lerPolitica`, `continuar` e a checagem do catálogo saíram do `ClienteMcp` e foram para o Host (`src/host/`). O cliente ficou só com o protocolo. Veja a seção "Passo 9" logo abaixo.
+
 | Item | Situação |
 |---|---|
 | `agente/` com `@modelcontextprotocol/client` 2.4.0 (exata), sem importar nada de `servidor-mcp/` | ✅ |
@@ -1064,3 +1072,185 @@ A demo **altera a agenda** do servidor (a aceitação no dia 03 ocupa a fusca à
 | `tools/list` com `cacheMode: 'use'` | 0: equivalente hoje (o servidor não manda `ttlMs`, então o SDK sempre busca de novo); `'refresh'` fica explícito |
 
 **Pontos reaproveitados no Host MCP (Passo 9).** `ClienteMcp` inteiro (um por processo), `descobrir` e `lerPolitica` a cada Task, `chamarTool` + `continuar`, o tipo `ResultadoInputRequired` como conteúdo da `ContextoRetomada`, `aceitar/recusar/cancelar`, `traceparentFilho` e `ErroMcp`/`ErroDeUso` → `TASK_STATE_FAILED`. Fica de fora do Host: `demo.ts` e `observacao.ts` (só testes e demonstração).
+
+### Passo 9: Host MCP (18/11/2026)
+
+| Item | Situação |
+|---|---|
+| `src/host/{host,catalogo,contexto,continuacao,resultado}.ts` | ✅ |
+| `ClienteMcp` reduzido ao protocolo (`listarTools`, `lerRecurso`, `chamarTool` com retry, `fechar`) | ✅ |
+| `src/demo.ts` reescrita para consumir só o Host (escolha manual, recusa e cancelamento) | ✅ |
+| `test/unidade.test.ts` (23) + `test/cliente.test.ts` (5) + `test/host.test.ts` (31) | ✅ `npm test`: 59/59 |
+| Regressão | ✅ `servidor-mcp`: 135/135; validador 20/36 (21 a 36 dependem do agente A2A) |
+| A2A (Agent Card, `/a2a`, Tasks, estados) | não faz parte deste passo |
+
+**Por que um Host.** No Passo 8, o `ClienteMcp` fazia duas coisas: falar o protocolo e organizar o uso dele (catálogo, política, pausa e retomada). Para a ponte A2A, essas duas coisas mudam por motivos diferentes. O protocolo muda quando muda a revisão do MCP. A organização muda quando muda o jeito de usar (Task A2A, terminal, teste). O Passo 9 separa as duas em três camadas, e cada uma só conversa com a de baixo.
+
+```mermaid
+flowchart LR
+    subgraph AG["processo agente/"]
+        direction LR
+        APP["Aplicação<br/>demo.ts hoje · ponte A2A depois<br/>sabe o caso de uso: reservar sala"]
+        HOST["Host MCP<br/>src/host/<br/>catálogo · política · contexto<br/>continuação · 6 desfechos"]
+        CLI["Cliente MCP<br/>src/mcp/<br/>Client do SDK · transporte<br/>_meta · headers · ids · erros"]
+        APP -->|"executar / continuar<br/>ResultadoDaOperacao"| HOST
+        HOST -->|"listarTools / lerRecurso<br/>chamarTool(retry)"| CLI
+    end
+    subgraph SV["processo servidor-mcp/ :7301"]
+        SRV["Servidor MCP<br/>tools · resource · MRTR<br/>todas as regras de salas"]
+    end
+    CLI -->|"HTTP POST /mcp<br/>JSON-RPC 2026-07-28"| SRV
+
+    classDef app fill:#fde68a,stroke:#b45309,color:#1f2937
+    classDef host fill:#bfdbfe,stroke:#1d4ed8,color:#1f2937
+    classDef cli fill:#c7d2fe,stroke:#4338ca,color:#1f2937
+    classDef srv fill:#bbf7d0,stroke:#15803d,color:#1f2937
+    class APP app
+    class HOST host
+    class CLI cli
+    class SRV srv
+```
+
+**Quem faz o quê.**
+
+| Responsabilidade | Aplicação | Host (`src/host/`) | Cliente (`src/mcp/`) | Servidor |
+|---|---|---|---|---|
+| Saber que quer `reservar_sala` e com que dados | ✅ | | | |
+| Perguntar ao usuário e decidir aceitar, recusar ou cancelar | ✅ | | | |
+| Catálogo de tools (`tools/list`) e checagem antes de chamar | | ✅ | | |
+| Ler `politica://uso`, extrair a versão, guardar a origem | | ✅ (usa `politica.ts`) | | |
+| Contexto de execução (operação, `traceparent`) | cria | propaga | aplica no `_meta` | registra no log |
+| Converter `input_required` em `Continuacao` | | ✅ | | |
+| Validar a resposta contra o `requestedSchema` recebido | | ✅ (usa `mrtr.ts`) | | revalida |
+| Classificar em seis desfechos | | ✅ | três + `ErroMcp` | |
+| Transporte, ids, `_meta`, headers, erros JSON-RPC e de rede | | | ✅ | |
+| Disponibilidade, conflito, alternativas, `requestState` assinado | | | | ✅ |
+
+O Host não conhece nenhuma regra de salas. Ele não sabe o que é conflito, não escolhe alternativa, não interpreta o `requestState` e não tem lista de tools. Nenhum arquivo de `src/host/` cita `reservar_sala`, `sala-` ou `escolha_de_sala`.
+
+**Interface do Host.**
+
+```ts
+const host = await HostMcp.iniciar({ url }, ctx);              // connect + tools/list
+host.ferramentas(); host.ferramenta('nome');                    // catálogo (cópias)
+await host.descobrir(ctx);                                      // tools/list de novo
+const politica = await host.lerPolitica(ctx);                   // { versao, texto, origem }
+await host.lerRecurso(uri, ctx);                                // qualquer resource
+const r = await host.executar(nome, argumentos, ctx);           // ResultadoDaOperacao
+const r2 = await host.continuar(continuacao, resposta, ctx);    // retry MRTR
+await host.reiniciar(ctx); await host.encerrar();
+```
+
+`ctx` é um `ContextoDeExecucao { operacao?, traceparent? }`, sempre explícito em cada chamada. O Host não tem um contexto global: duas chamadas com contextos diferentes não se afetam.
+
+**Inicialização e descoberta.** `iniciar` cria um `ClienteMcp` (que faz o `server/discover` do SDK) e logo depois faz `tools/list`. As capabilities que o cliente anuncia vêm da configuração (`elicitation.form`), nunca de requests anteriores. O catálogo guarda nome, descrição, `inputSchema` e `outputSchema` como vieram, e devolve cópias, para ninguém alterar o catálogo por fora. `executar` consulta o catálogo **antes** de mandar qualquer coisa. Tool que o servidor não ofereceu, ou argumento `required` ausente, viram `ErroDeUso`, sem nenhum request no fio. `descobrir()` busca de novo e substitui o catálogo inteiro, sem cache.
+
+**Política com origem.** `lerPolitica` faz `resources/read politica://uso` e devolve `{ versao, texto, origem: { uri, mimeType, servidor, lidaEm } }`. `servidor` é o `serverInfo` que o próprio servidor manda no `_meta` da resposta (`central-de-salas`). A versão é extraída da primeira linha `versao: AAAA-MM-DD`, como no Passo 8. Nada de versão está escrito no código. Com outra política (`2099-12-31`, em CRLF), o Host devolve `2099-12-31`.
+
+**Seis desfechos.** `executar` e `continuar` nunca lançam erro por causa do servidor. Eles devolvem um `ResultadoDaOperacao`, sempre com `operacao` e `ferramenta`:
+
+| `tipo` | Quando | O que traz | É erro? |
+|---|---|---|---|
+| `completo` | `result` sem `isError` | `estruturado` (`structuredContent`) e `bruto` | não (inclui recusa: `reservado: false`) |
+| `erro_execucao` | `result.isError: true` | `mensagem` da tool e `bruto` | erro da tool |
+| `input_required` | `resultType: "input_required"` | `continuacao` e `bruto` | **não**: é uma pausa |
+| `erro_protocolo` | resposta JSON-RPC com `error` | `codigo`, `mensagem`, `dados` | erro de protocolo |
+| `falha_transporte` | sem resposta MCP (rede, servidor fora) | `codigo`, `mensagem` | erro de transporte |
+| `resposta_invalida` | a resposta do usuário não bate com o `requestedSchema` | `problemas` e a **mesma** `continuacao` | não foi enviada; dá para tentar de novo |
+
+Só `ErroDeUso` é lançado, e só por erro de programação do chamador: tool fora do catálogo, argumento obrigatório ausente, Host encerrado, ou retomar com outra operação. Nesses casos nada é enviado.
+
+**Continuação.** Quando o servidor pausa, o Host monta uma `Continuacao`:
+
+```ts
+{
+  formato: 1,
+  operacao: 'op-A',                    // de quem é a pausa
+  ferramenta: 'reservar_sala',
+  argumentos: { sala, inicio, fim, responsavel },   // os originais, para o retry
+  pedidos: [{ chave, metodo, modo, mensagem, requestedSchema, campos }],
+  requestState: '…',                   // opaco, exatamente como veio
+  traceparent: '00-…-01',              // o da operação, se houver
+  rodada: 1,                           // 2, 3… se o servidor pausar de novo
+}
+```
+
+Ela é um **valor**: uma cópia congelada (`Object.freeze`) que passa por `JSON.stringify`/`JSON.parse` sem perder nada. Não guarda conexão HTTP, promessa, função nem referência ao Host. O Host também não guarda a continuação: quem guarda é quem chamou (a demo, num `let`; a ponte A2A, depois, junto da Task). Por isso dá para retomar em outro Host, depois de `reiniciar()`, ou depois de o servidor reiniciar com o mesmo segredo. Os testes fazem os três.
+
+**`requestState` opaco.** O Host copia o `requestState` para a continuação e o devolve no retry sem tocar nele. Não decodifica, não valida e não usa para nada. Ele também não aparece em log nem na tela: `resumir(continuacao)` mostra `<opaco, N caracteres>` no lugar, e a demo só imprime esse resumo. Quando o servidor rejeita um `requestState` adulterado, o `erro_protocolo` traz `-32602` e `{ reason: 'invalid_request_state' }`, sem o conteúdo do estado.
+
+**Retomada.** `continuar(continuacao, resposta, ctx)`:
+
+1. Se `ctx.operacao` foi informado e é diferente de `continuacao.operacao`, lança `ErroDeUso`, sem enviar nada.
+2. Aceita uma resposta única (`{ action: 'accept', content }`) quando há um só pedido, ou um mapa `{ [chave]: resposta }`.
+3. Valida contra os `pedidos` da continuação: todas as chaves e nenhuma a mais, `action` válida, `content` obrigatório no `accept`, tipos e `enum`. Se algo falhar, devolve `resposta_invalida` sem request.
+4. Confere o catálogo de novo (a tool pode ter sumido).
+5. Chama `chamarTool` com os **mesmos** `arguments`, mais `inputResponses` e `requestState` em `params`. O SDK dá um id JSON-RPC novo.
+6. O `traceparent` é o de `ctx`, se vier; senão, o da continuação. Assim o retry fica no mesmo trace mesmo que a aplicação não repasse o contexto.
+
+**Isolamento entre operações.** O estado de cada operação está inteiro na sua continuação, e o Host não tem nenhum "pedido pendente". Duas pausas no mesmo Host (garagem 14h com o trace A e porão 9h com o trace B) são retomadas na ordem inversa: cada retry leva o próprio `requestState` e o próprio trace-id, e as reservas saem com o responsável, a sala e o horário certos. Três operações em paralelo (`Promise.all`) também não se misturam.
+
+**Trace context.** Com `ctx.traceparent`, todo request da operação (`tools/list`, `resources/read`, `tools/call` e o retry) leva o mesmo trace-id e as mesmas flags, com um span novo. O servidor registra o trace-id nas linhas `recv`. Sem `traceparent`, nenhum é inventado, nem no retry. A demo só usa `--traceparent`, nunca uma variável de ambiente.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Aplicação (demo)
+    participant H as Host MCP
+    participant C as Cliente MCP
+    participant S as Servidor MCP :7301
+    A->>H: HostMcp.iniciar({url}, ctx)
+    H->>C: ClienteMcp.conectar
+    C->>S: server/discover
+    H->>C: listarTools(ctx)
+    C->>S: tools/list (id=0)
+    S-->>H: tools[] → catálogo
+    A->>H: lerPolitica(ctx)
+    C->>S: resources/read politica://uso (id=1)
+    S-->>H: versao 2026-11-01 + origem
+    A->>H: executar('reservar_sala', args, ctx)
+    Note over H: catálogo: tool existe e required presentes
+    C->>S: tools/call (id=2, traceparent span A)
+    S-->>H: input_required: inputRequests + requestState
+    H-->>A: {tipo: input_required, continuacao}
+    Note over A,S: nada fica aberto: nem HTTP, nem estado no Host
+    A->>A: mostra as opções e lê a escolha
+    A->>H: continuar(continuacao, {accept, sala-fusca}, ctx)
+    Note over H: valida contra o requestedSchema da continuação
+    C->>S: tools/call (id=3, NOVO, span B)<br/>mesmos arguments + inputResponses + requestState
+    S-->>H: complete: reservado true
+    H-->>A: {tipo: completo, estruturado}
+```
+
+**Demo.** `npm run demo` só usa `HostMcp`. Ela imprime o catálogo, a política com a origem, cada request do fio (id, `Mcp-Method`, `Mcp-Name`, `traceparent`), o tipo de cada resultado e a continuação resumida. No conflito, ela mostra as opções e lê `1`, `2`, `r` (recusar) ou `c` (cancelar) do teclado, ou usa `--escolha`, `--recusar` ou `--cancelar`. Uma escolha inválida volta como `resposta_invalida`, sem request. No teclado (`9`), a demo pergunta de novo; com `--escolha sala-x`, ela termina com código 2.
+
+**Testes e mutações.** `cliente.test.ts` mostra que o cliente agora é só protocolo: `chamarTool` manda uma tool desconhecida para o servidor (e recebe `-32602`), porque quem barra é o Host. `host.test.ts` cobre inicialização, catálogo, política, os seis desfechos, MRTR (aceitar, recusar, cancelar, resposta inválida, nova pausa na rodada 2, JSON, outro Host, outra operação), isolamento, trace, `reiniciar()` e servidor reiniciado. As mutações abaixo quebram o Host de propósito, e todas foram detectadas:
+
+| Mutação no Host | Testes que falharam |
+|---|---|
+| Não guardar o `requestState` na continuação | 18 |
+| Retry com o `traceparent` só de `ctx` (sem o da continuação) | 4 |
+| Sem a validação local da resposta | 2 |
+| Sem conferir a operação ao retomar | 2 |
+| Sem conferir o catálogo em `executar` | 2 |
+| Rodada sempre 1 | 2 |
+
+**Integração futura com A2A.** A ponte vai ser mais uma aplicação do Host, como a demo. Uma Task A2A vira uma operação (`operacao = taskId`, `traceparent` do header A2A). `input_required` vira `TASK_STATE_INPUT_REQUIRED`, e a `Continuacao` fica guardada fora da Task pública, porque leva o `requestState`. A resposta do usuário chega num `SendMessage` posterior e vira `host.continuar(...)`. Os outros desfechos viram `COMPLETED` ou `FAILED`. Nada disso existe ainda: o Passo 9 só deixa o Host pronto para isso.
+
+**Comandos.**
+
+```powershell
+cd agente
+npm run check
+npm test                      # 59 testes; sobe o servidor-mcp sozinho em porta livre
+
+# com o servidor no ar (cd servidor-mcp; npm start), em outro terminal:
+npm run demo                                          # reserva simples
+npm run demo -- --exemplo conflito                    # escolha no teclado: 1, 2, r, c
+npm run demo -- --exemplo conflito --escolha sala-fusca
+npm run demo -- --exemplo conflito --recusar          # ou --cancelar
+npm run demo -- --exemplo conflito --escolha sala-x   # resposta_invalida, sem request (código 2)
+npm run demo -- --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+A demo continua alterando a agenda. Reinicie o servidor antes de rodar o validador.

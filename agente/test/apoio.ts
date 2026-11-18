@@ -6,6 +6,8 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HostMcp } from '../src/host/host.ts';
+import type { ContextoDeExecucao } from '../src/host/contexto.ts';
 import { ClienteMcp } from '../src/mcp/cliente.ts';
 import { fetchObservado, type RequestObservado } from '../src/mcp/observacao.ts';
 
@@ -36,15 +38,15 @@ export interface ServidorDeTeste {
 }
 
 export async function subirServidor(env: Record<string, string> = {}): Promise<ServidorDeTeste> {
-  const porta = await portaLivre();
+  const porta = env.MCP_PORT ? Number(env.MCP_PORT) : await portaLivre();
   const processo = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
     cwd: DIR_DO_SERVIDOR,
     env: {
       ...process.env,
-      MCP_PORT: String(porta),
       REQUEST_STATE_SECRET: randomBytes(32).toString('hex'), // só desta execução
       REQUEST_STATE_TTL_SECONDS: '',
       ...env,
+      MCP_PORT: String(porta),
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -70,7 +72,7 @@ export async function subirServidor(env: Record<string, string> = {}): Promise<S
     processo,
     parar: () =>
       new Promise<void>((resolve) => {
-        if (processo.exitCode !== null) return resolve();
+        if (processo.exitCode !== null || processo.signalCode !== null) return resolve();
         processo.once('exit', () => resolve());
         processo.kill();
       }),
@@ -87,4 +89,11 @@ export async function conectar(url: URL): Promise<{ cliente: ClienteMcp; fio: Re
 /** Linhas "[mcp] recv" do servidor para um id JSON-RPC. */
 export function logDoId(saida: string, id: string | number | undefined): string | undefined {
   return saida.split(/\r?\n/).find((l) => l.startsWith('[mcp] recv ') && l.includes(` id=${JSON.stringify(id)} `));
+}
+
+/** Host iniciado (server/discover + tools/list) + registro do fio. */
+export async function iniciarHost(url: URL, ctx: ContextoDeExecucao = {}): Promise<{ host: HostMcp; fio: RequestObservado[] }> {
+  const fio: RequestObservado[] = [];
+  const host = await HostMcp.iniciar({ url, fetch: fetchObservado((r) => fio.push(r)) }, ctx);
+  return { host, fio };
 }
