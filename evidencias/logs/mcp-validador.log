@@ -1,0 +1,74 @@
+responseMode: 'json' drops mid-call notifications. subscriptions/listen streams are always served over SSE regardless; other notifications emitted before a result are dropped.
+[mcp] pronto url=http://localhost:7301/mcp salas=5 reservas=2 politica="versao: 2026-11-01" protocolo=2026-07-28 requestStateTtl=900
+[mcp] recv method=tools/list id="e831cdb17789" name=- traceparent=-
+[mcp] recv method=tools/call id="d4be030245d3" name=listar_salas traceparent=-
+[mcp] recv method=tools/call id="e723d51bbf60" name=listar_salas traceparent=-
+[mcp] rejeitado tipo=Error mensagem="Rejected inbound request (modern-header-without-claim): Invalid params: the MCP-Protocol-Version header names protocol revision 2026-07-28, but the request is missing the required per-request envelope key(s): io.modelcontextprotocol/protocolVersion"
+[mcp] recv method=tools/call id="7c9188c2e4bc" name=listar_salas traceparent=-
+[mcp] rejeitado tipo=Error mensagem="Rejected inbound request (envelope-invalid): Invalid _meta envelope for protocol revision 2026-07-28: io.modelcontextprotocol/clientCapabilities: missing"
+[mcp] recv method=tools/call id="c6168b6f3229" name=voar_delorean traceparent=-
+[mcp] recv method=resources/read id="07f307abfc25" name=politica://uso traceparent=-
+[mcp] recv method=resources/read id="e652e9e40856" name=politica://inexistente traceparent=-
+[mcp] recv method=tools/call id="ebdad3ca7a85" name=reservar_sala traceparent=-
+[mcp] recv method=tools/call id="42f315ae19df" name=consultar_disponibilidade traceparent=-
+[mcp] recv method=tools/call id="6ab04bd2c072" name=consultar_disponibilidade traceparent=-
+[mcp] recv method=tools/call id="694c5b98af5b" name=consultar_disponibilidade traceparent=-
+[mcp] recv method=tools/call id="c80d3377b121" name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01
+[mcp] mrtr evento=conflito id="c80d3377b121" chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
+[mcp] recv method=tools/call id="ffba3234a8f0" name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id="ffba3234a8f0" chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
+[mcp] recv method=tools/call id="75da01ee97e7" name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id="75da01ee97e7" chave=escolha_de_sala alternativas=sala-garagem,sala-mirante
+[mcp] recv method=tools/call id="728d0b14fcae" name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id="728d0b14fcae" resultado=accept escolha=sala-garagem
+[mcp] recv method=tools/call id="8caf2c0e3a01" name=reservar_sala traceparent=-
+[mcp] rejeitado tipo=Error mensagem="requestState verification rejected tools/call: mac"
+[mcp] recv method=tools/call id="8e6d4ee8512e" name=reservar_sala traceparent=-
+[mcp] recv method=tools/call id="49652b4aa6f5" name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id="49652b4aa6f5" chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
+[mcp] recv method=tools/call id="bfaeeb3a20fb" name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id="bfaeeb3a20fb" resultado=accept escolha=sala-fusca
+[mcp] recv method=tools/call id="2ff08cd5eac6" name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id="2ff08cd5eac6" resultado=decline
+[mcp] recv method=tools/call id="e3948bdd2942" name=reservar_sala traceparent=-
+[mcp] recv method=tools/call id="da366f433374" name=reservar_sala traceparent=-
+[mcp] recv method=server/discover id="server-discover-probe-1" name=- traceparent=-
+[mcp] recv method=tools/list id=0 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-f06b543ee17e90e6-01
+[mcp] recv method=tools/list id=1 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-49389d85164e0098-01
+[mcp] recv method=resources/read id=2 name=politica://uso traceparent=00-1d9558549e0a087126d13524029f5d8e-4c3739d109e3d33c-01
+[mcp] recv method=tools/call id=3 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-3116e955c1fc5024-01
+[mcp] recv method=tools/list id=4 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-16b670c5abc12b0f-01
+[mcp] recv method=resources/read id=5 name=politica://uso traceparent=00-1d9558549e0a087126d13524029f5d8e-bd8f01ad6c6506e9-01
+[mcp] recv method=tools/call id=6 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-0ea9f8d1c2840945-01
+[mcp] mrtr evento=conflito id=6 chave=escolha_de_sala alternativas=sala-fusca,sala-mirante
+[mcp] recv method=tools/call id=7 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-3d7664b6763b823c-01
+[mcp] mrtr evento=retry id=7 resultado=accept escolha=sala-fusca
+[mcp] recv method=tools/list id=8 name=- traceparent=-
+[mcp] recv method=resources/read id=9 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=10 name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id=10 chave=escolha_de_sala alternativas=sala-mirante
+[mcp] recv method=tools/call id=11 name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id=11 resultado=decline
+[mcp] recv method=tools/list id=12 name=- traceparent=-
+[mcp] recv method=resources/read id=13 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=14 name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id=14 chave=escolha_de_sala alternativas=sala-mirante
+[mcp] recv method=tools/list id=15 name=- traceparent=-
+[mcp] recv method=resources/read id=16 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=17 name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id=17 chave=escolha_de_sala alternativas=sala-mirante
+[mcp] recv method=tools/call id=18 name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id=18 resultado=accept escolha=sala-mirante
+[mcp] recv method=tools/call id=19 name=reservar_sala traceparent=-
+[mcp] mrtr evento=retry id=19 resultado=accept escolha=sala-mirante
+[mcp] recv method=tools/list id=20 name=- traceparent=-
+[mcp] recv method=resources/read id=21 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=22 name=reservar_sala traceparent=-
+[mcp] recv method=tools/list id=23 name=- traceparent=-
+[mcp] recv method=resources/read id=24 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=25 name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id=25 chave=escolha_de_sala alternativas=sala-mirante
+[mcp] recv method=tools/list id=26 name=- traceparent=-
+[mcp] recv method=resources/read id=27 name=politica://uso traceparent=-
+[mcp] recv method=tools/call id=28 name=reservar_sala traceparent=-
+[mcp] mrtr evento=conflito id=28 chave=escolha_de_sala alternativas=sala-mirante

@@ -1,6 +1,10 @@
+# Segredos locais: servidor-mcp/.env guarda o REQUEST_STATE_SECRET (o modelo versionado é .env.example)
 .env
-.venv/
-__pycache__/
+# Dependências e artefatos gerados
 node_modules/
 dist/
+.venv/
+__pycache__/
+# Logs locais. Exceção: os logs da validação formal fazem parte das evidências.
 *.log
+!evidencias/logs/*.log

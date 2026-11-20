@@ -1,463 +1,383 @@
-# A Ponte: um agente A2A com MCP por dentro
+# A Ponte: agente A2A com MCP por dentro
 
-*Onde termina a profundidade e começa o alcance*
+Entrega do desafio [A Ponte](https://github.com/devfullcycle/desafio-a2a-com-mcp) (FullCycle). O desafio pede dois processos que conversam por HTTP:
 
-**Projeto:** MBA Engenharia de Software com IA, curso de MCP e A2A
-**Fase do projeto:** Desafio inicial
+- **Servidor MCP** (`servidor-mcp/`, porta 7301). É o dono do domínio: as salas, as reservas e as regras de uso. Expõe três tools (`listar_salas`, `consultar_disponibilidade`, `reservar_sala`) e o resource `politica://uso`. Quando a sala pedida está ocupada, ele não responde que deu erro: devolve `input_required` (MRTR), com uma pergunta e um `requestState` assinado.
+- **Agente** (`agente/`, porta 7300). É host MCP por dentro e servidor A2A por fora. Descobre as tools do servidor MCP, executa a reserva e se oferece a outros agentes por um Agent Card, com `SendMessage` e `GetTask`.
+- **A ponte** fica dentro do agente. Ela transforma o `input_required` do MCP em uma Task `TASK_STATE_INPUT_REQUIRED` no A2A. Quando o cliente responde, a ponte repete o `tools/call` original, com um id novo, as `inputResponses` e o mesmo `requestState`.
 
-## Descrição
+Não há LLM. O agente lê um pedido de formato fixo (`reservar sala=… inicio=… fim=… responsavel=…`) e decide por regra. Quem chama o agente pelo A2A não tem como saber o que há por trás dele.
 
-Neste desafio você vai construir as duas pontas da fronteira que o curso inteiro vem desenhando: um servidor MCP que expõe as capacidades de um domínio, e um agente que consome esse servidor por dentro (como host MCP) e se oferece ao mundo por fora (como servidor A2A).
+O enunciado original está no [repositório do desafio](https://github.com/devfullcycle/desafio-a2a-com-mcp#readme). O projeto detalhado está em [`ARQUITETURA.md`](ARQUITETURA.md). A validação formal, com matriz de requisitos e evidências, está em [`RELATORIO-CONFORMIDADE.md`](RELATORIO-CONFORMIDADE.md).
 
-O que torna isto um desafio de arquitetura, e não um exercício de API, é o estado. Nenhum dos dois protocolos tem sessão. O MCP resolve isso com o `requestState` do MRTR, devolvido ao cliente e reenviado no retry. O A2A resolve com a Task, que tem identidade, estado e produto. No meio do seu agente, esses dois mecanismos precisam se encontrar: quando o servidor MCP responde que precisa de mais informação, o seu agente não pode responder por conta própria nem travar esperando. Ele precisa interromper a Task, devolver a pergunta ao cliente A2A, guardar o `requestState` ligado àquela Task e, quando a resposta chegar, repetir o request MCP original com um id novo.
+## Arquitetura
 
-Essa costura é a ponte que dá nome ao desafio. É ela que você vai ser avaliado por construir.
+```mermaid
+flowchart LR
+    C["Cliente A2A<br/>(validador, curl, outro agente)"]
+    subgraph AG["agente/ · processo 2 · :7300"]
+        direction TB
+        A2A["Servidor A2A<br/>Agent Card, SendMessage, GetTask<br/>Tasks em memória"]
+        PONTE["Ponte<br/>input_required ⇄ INPUT_REQUIRED<br/>continuação por taskId"]
+        HOST["Host MCP<br/>descoberta, política, retry"]
+        A2A --> PONTE --> HOST
+    end
+    subgraph MCP["servidor-mcp/ · processo 1 · :7301"]
+        direction TB
+        TOOLS["3 tools + politica://uso<br/>MRTR: input_required + requestState HMAC"]
+        AGENDA["Agenda em memória"]
+        TOOLS --> AGENDA
+    end
+    D[("dados/<br/>salas.json, reservas.json,<br/>politica-de-uso.md")]
+    C -- "HTTP POST /a2a<br/>JSON-RPC 2.0, A2A 1.0<br/>header traceparent" --> A2A
+    HOST -- "HTTP POST /mcp<br/>Streamable HTTP, MCP 2026-07-28<br/>_meta.traceparent" --> TOOLS
+    AGENDA -. "lido uma vez no boot" .-> D
+```
 
-Cenário: a Hill Valley Tech tem cinco salas de reunião e uma planilha compartilhada que ninguém respeita. O time decidiu expor as salas como capacidade de agente, para que qualquer assistente da empresa consiga reservar sem abrir a planilha. A decisão de arquitetura já foi tomada e não está em discussão: as ferramentas de sala viram um servidor MCP, e a capacidade de reservar vira um agente A2A que qualquer outro agente da empresa possa descobrir e chamar. Falta construir.
+| Camada | Transporte | Protocolo | Responsabilidade |
+|---|---|---|---|
+| Cliente → agente | HTTP, `POST /a2a` e `GET /.well-known/agent-card.json` | A2A 1.0, binding JSON-RPC | Pedir a reserva, responder à pausa, consultar a Task |
+| Agente → servidor MCP | HTTP, `POST /mcp`, só respostas JSON (sem SSE) | MCP revisão `2026-07-28`, stateless, sem sessão | Descobrir tools, ler a política, chamar `reservar_sala` e fazer o retry MRTR |
+| Servidor MCP → dados | arquivo local, lido no boot | nenhum | Salas, reservas iniciais e versão da política. As reservas novas ficam só em memória |
 
-## Sobre o foco do desafio
+## Pré-requisitos
 
-O foco é protocolo. O domínio é deliberadamente bobo: cinco salas, uma lista de reservas e três regras de uso, tudo entregue pronto no starter em arquivos JSON. Você não vai gastar tempo modelando negócio, e não deve. Se a sua entrega tem um ORM, um banco e uma camada de serviços, você trabalhou no lugar errado.
+Versões usadas na validação (Windows 11). A coluna "mínimo" é o que os manifestos e o validador exigem.
 
-O agente também não usa LLM. Ele interpreta um pedido em formato fixo e decide por regra. Isso é intencional por dois motivos: mantém a correção determinística, e prova na prática a tese da opacidade do A2A, porque quem chama o seu agente não tem como saber se por trás dele existe um modelo, um grafo ou um `if`.
+| Ferramenta | Validado com | Mínimo |
+|---|---|---|
+| Node.js | v26.13.0 | 22 (`engines` dos dois `package.json`) |
+| npm | 11.20.0 | o que vem com o Node 22 |
+| Python | 3.15.2 | 3.10, só biblioteca padrão (validador e scripts) |
+| Git | 2.55.0 | qualquer um |
 
-Duas fricções propositais estão plantadas no contrato, e cada uma tem uma pista.
+Nada é instalado globalmente: `tsx` e `typescript` são dependências de desenvolvimento de cada pacote. No Windows o Python costuma se chamar `python`; no Linux e no macOS, `python3`. Os comandos abaixo usam `python3`.
 
-A primeira: no transporte stateless não existe canal de volta. Se você tentar fazer o servidor chamar o cliente no meio da execução da tool, vai receber um erro dizendo exatamente isso. Pista: o servidor não inicia request, ele termina a resposta pedindo informação. Procure como o seu SDK expressa MRTR, e não como ele expressa uma pergunta síncrona ao usuário.
+## Como rodar
 
-A segunda: o servidor MCP não pode mandar uma elicitation para um cliente que não declarou essa capability. Pista: a capability viaja em `io.modelcontextprotocol/clientCapabilities`, dentro do `_meta` de cada request, e a spec define um código de erro específico para quando ela falta. Repare que o que se declara é a elicitation em form mode, não elicitation em geral.
+Os comandos partem de um clone limpo e rodam na raiz do repositório, a menos que digam outra coisa.
 
-A terceira: o `requestState` volta pelas mãos do cliente, então ele é entrada controlada por atacante. Pista: a spec manda proteger a integridade dele e rejeitar o que não passar na verificação, e os dois SDKs oferecem um utilitário pronto para isso. Um `requestState` que é só um JSON em base64, sem assinatura, atende ao caminho feliz e falha na verificação do avaliador. O conteúdo pode ser legível, o que não pode é ser adulterável.
+### 1. Clonar e instalar
 
-## Objetivo
+```bash
+git clone https://github.com/igorblopes/desafio-a2a-com-mcp.git
+cd desafio-a2a-com-mcp
+cd servidor-mcp && npm ci && cd ..
+cd agente && npm ci && cd ..
+```
 
-Entregar, em um repositório público no GitHub (fork do starter), os dois processos funcionando e verificáveis:
+`npm ci` instala exatamente as versões do `package-lock.json`. Todas as versões dos `package.json` são fixas, sem `^` nem `~`.
 
-- Um servidor MCP em Streamable HTTP, com três tools, um resource, os dois tipos de erro e o ciclo completo de MRTR na tool de reserva
-- Um agente que é host MCP por dentro, descobrindo e chamando as tools do seu próprio servidor
-- O mesmo agente como servidor A2A por fora, com Agent Card publicado, `SendMessage` e `GetTask`, e Task passando por `TASK_STATE_INPUT_REQUIRED`
-- A propagação do `traceparent` do cliente A2A até o servidor MCP, registrada em log
-- Um `README.md` com os comandos de subida e a explicação de onde a ponte acontece
-- A execução do validador do starter passando em todas as verificações
+### 2. Configurar o segredo do `requestState`
 
-## Repositório base
+O servidor MCP **não sobe** sem `REQUEST_STATE_SECRET`. A chave precisa ter pelo menos 64 dígitos hexadecimais, que são 32 bytes de aleatoriedade. Ela não está no repositório, e cada pessoa gera a sua:
 
-https://github.com/devfullcycle/desafio-a2a-com-mcp
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
 
-Faça o fork e entregue tudo na branch `main` do seu fork.
+Escolha **uma** destas formas de entregar a chave ao processo:
 
-O starter não tem código de aplicação para você estender: ele tem os dados do domínio, a política de uso, os exemplos de wire dos dois protocolos e o validador que o avaliador vai rodar contra a sua entrega. As pastas `servidor-mcp/` e `agente/` chegam vazias, com um `.gitkeep`. Esse vácuo é proposital.
+- **Arquivo `servidor-mcp/.env`** (recomendado). O `npm start` carrega esse arquivo com `--env-file-if-exists=.env`, e ele está no `.gitignore`. O comando abaixo gera a chave e grava o arquivo, em qualquer sistema. Rode **uma vez só**, porque ele sobrescreve o `.env`:
 
-O validador roda com Python 3.10 ou superior e não tem dependência externa:
+  ```bash
+  python3 -c "import secrets; open('servidor-mcp/.env','w').write('REQUEST_STATE_SECRET='+secrets.token_hex(32)+'\n')"
+  ```
+
+  O modelo comentado está em [`servidor-mcp/.env.example`](servidor-mcp/.env.example). No Windows PowerShell 5.1, não crie o `.env` com `>` nem com `echo`, porque eles gravam o arquivo em UTF-16 e o Node não lê.
+
+- **Variável de ambiente**, só no terminal do servidor MCP:
+
+  ```bash
+  export REQUEST_STATE_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"   # bash/zsh
+  ```
+
+  ```powershell
+  $env:REQUEST_STATE_SECRET = python -c "import secrets; print(secrets.token_hex(32))"      # PowerShell
+  ```
+
+**Para o teste de retry depois do restart, use a mesma chave.** Um `requestState` emitido antes do restart só é aceito depois dele se o segredo for o mesmo. Com o `.env` isso acontece sozinho. Com a variável, reinicie o servidor no mesmo terminal. O servidor nunca gera uma chave sozinho.
+
+### 3. Subir os dois processos, cada um no seu terminal
+
+```bash
+# terminal 1: servidor MCP em http://localhost:7301/mcp (os logs saem no stderr deste terminal)
+cd servidor-mcp
+npm start
+```
+
+```bash
+# terminal 2: agente A2A em http://localhost:7300
+cd agente
+npm start
+```
+
+Linhas esperadas na subida. No terminal do MCP, a linha `pronto` vem logo depois de um aviso do SDK, explicado abaixo:
+
+```
+[mcp] pronto url=http://localhost:7301/mcp salas=5 protocolo=2026-07-28 ...
+[a2a] pronto em http://localhost:7300 (card http://localhost:7300/.well-known/agent-card.json, mcp http://localhost:7301/mcp)
+```
+
+O agente sobe mesmo com o MCP fora do ar: ele conecta na primeira Task. O SDK do MCP também imprime um aviso na subida (`responseMode: 'json' drops mid-call notifications`). Ele é esperado, porque o servidor responde só em JSON, nunca em SSE.
+
+Variáveis opcionais. Os padrões já atendem o desafio.
+
+| Processo | Variável | Padrão | Uso |
+|---|---|---|---|
+| servidor-mcp | `REQUEST_STATE_SECRET` | **obrigatória** | Chave HMAC do `requestState`, em hex, com 64 dígitos ou mais |
+| servidor-mcp | `REQUEST_STATE_TTL_SECONDS` | `900` | Validade de um `requestState`, entre 300 e 1800 |
+| servidor-mcp | `MCP_PORT` | `7301` | Porta HTTP |
+| servidor-mcp | `DADOS_DIR` | `../dados` | Pasta de dados, relativa a `servidor-mcp/` |
+| agente | `A2A_PORT` | `7300` | Porta HTTP |
+| agente | `A2A_PUBLIC_URL` | `http://localhost:<porta>` | URL base anunciada no Agent Card |
+| agente | `MCP_URL` | `http://localhost:7301/mcp` | Endpoint do servidor MCP |
+| agente | `MCP_TIMEOUT_MS` | `20000` | Espera máxima por uma resposta do MCP, entre 1000 e 120000 |
+
+### 4. Consultar o Agent Card
+
+```bash
+curl http://localhost:7300/.well-known/agent-card.json
+```
+
+O card espelha [`exemplos/wire/07-a2a-agent-card.json`](exemplos/wire/07-a2a-agent-card.json): uma interface `JSONRPC` em `http://localhost:7300/a2a` com `protocolVersion` `1.0`, a skill `reservar-sala`, e `streaming`, `pushNotifications` e `extendedAgentCard` em `false`. No Windows PowerShell 5.1, use `curl.exe`, porque `curl` ali é um apelido de `Invoke-WebRequest`.
+
+### 5. Rodar o validador oficial
+
+Com os **dois processos recém-iniciados**:
 
 ```bash
 python3 validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
 ```
 
-## Contexto
+O validador imprime um trace-id na primeira linha, e esse mesmo valor aparece no stderr do servidor MCP (veja [Rastreabilidade](#rastreabilidade-no-log-do-mcp)). Ele cria reservas na agenda em memória. Para rodá-lo de novo, **reinicie os dois processos**; sem isso, as salas já ocupadas mudam as alternativas e algumas verificações falham.
 
-### O que o starter entrega
+### 6. Testes automatizados
 
-`dados/salas.json`, a lista fixa de salas, cada uma com `id`, `nome`, `capacidade` e `recursos`:
-
-```json
-[
-  { "id": "sala-aquario",  "nome": "Aquario",  "capacidade": 4,  "recursos": ["tv"] },
-  { "id": "sala-porao",    "nome": "Porao",    "capacidade": 6,  "recursos": ["quadro"] },
-  { "id": "sala-garagem",  "nome": "Garagem",  "capacidade": 12, "recursos": ["tv", "quadro"] },
-  { "id": "sala-fusca",    "nome": "Fusca",    "capacidade": 12, "recursos": ["tv"] },
-  { "id": "sala-mirante",  "nome": "Mirante",  "capacidade": 20, "recursos": ["tv", "quadro", "camera"] }
-]
+```bash
+cd servidor-mcp && npm run check && npm test && cd ..   # tipos + 149 testes: domínio, contrato HTTP, MRTR, requestState
+cd agente && npm run check && npm test && cd ..         # tipos + 130 testes: cliente, Host, A2A, ponte, falhas
 ```
 
-`dados/reservas.json`, as reservas que já existem quando o processo sobe:
+Os testes sobem os processos que precisam em portas livres, com um segredo gerado só para aquela execução. Por isso não precisam do `.env` nem dos processos dos passos 3 a 5, e podem rodar com eles no ar. Os testes do agente sobem o `servidor-mcp` de verdade, então as dependências dos dois pacotes precisam estar instaladas.
 
-```json
-[
-  { "id": "res-0001", "sala": "sala-garagem", "inicio": "2026-11-03T14:00:00-03:00", "fim": "2026-11-03T15:00:00-03:00", "responsavel": "Marty" },
-  { "id": "res-0002", "sala": "sala-fusca",   "inicio": "2026-11-03T16:00:00-03:00", "fim": "2026-11-03T17:00:00-03:00", "responsavel": "Jennifer" }
-]
+## Demonstração manual
+
+[`scripts/demo_a2a.py`](scripts/demo_a2a.py) envia um request por vez ao agente, com o envelope dos exemplos oficiais: o `SendMessage` vem de `exemplos/wire/08`, a continuação de `10` e o `GetTask` de `09`. A cada envio, ele troca só o `messageId`, o texto e o `taskId`. O script imprime a resposta JSON inteira e uma linha de resumo.
+
+```bash
+python3 scripts/demo_a2a.py card
+
+# pausa: sala-garagem das 14h às 15h de 03/11/2026, o pedido do exemplo 08
+python3 scripts/demo_a2a.py pedir
+#   ... | task <TASK_ID> | TASK_STATE_INPUT_REQUIRED | "alternativas: sala-fusca, sala-mirante" | artifacts: -
+
+python3 scripts/demo_a2a.py responder <TASK_ID> escolha=sala-inexistente   # continua INPUT_REQUIRED, mesma lista
+python3 scripts/demo_a2a.py responder <TASK_ID> escolha=sala-mirante       # COMPLETED, artifact "reserva"
+python3 scripts/demo_a2a.py consultar <TASK_ID>                            # GetTask: histórico e artifact com "politica"
+
+# recusa: um pedido novo em conflito, respondido com recusar
+python3 scripts/demo_a2a.py pedir
+python3 scripts/demo_a2a.py responder <OUTRO_TASK_ID> escolha=recusar      # TASK_STATE_CANCELED, sem artifact
+
+# erro de domínio
+python3 scripts/demo_a2a.py pedir "reservar sala=sala-inexistente inicio=2026-11-03T10:00:00-03:00 fim=2026-11-03T11:00:00-03:00 responsavel=Marty"
+#   ... | TASK_STATE_FAILED | "Sala inexistente: sala-inexistente"
 ```
 
-`dados/politica-de-uso.md`, o texto que o resource do seu servidor vai expor. A primeira linha declara a versão, e esse valor precisa aparecer no artifact que o agente devolve:
+Troque `<TASK_ID>` pelo `task.id` impresso na resposta da pausa. Todos os comandos reaproveitam o `traceparent` dos exemplos (trace-id `4bf92f3577b34da6a3ce929d0e0e4736`), então no log do MCP as Tasks da demonstração aparecem com o mesmo trace e se distinguem pelos ids. Use `--sem-trace` para não enviar o header. Responder a uma Task terminal dá o erro `-32004`, e uma Task inexistente dá `-32001`. A demonstração também altera a agenda: reinicie os dois processos antes de rodar o validador.
 
-```
-versao: 2026-11-01
+Para o mesmo `SendMessage` só com `curl` (bash), o corpo sai do próprio exemplo:
 
-- Reservas somente entre 08:00 e 20:00, horario de Sao Paulo (-03:00).
-- Duracao maxima de 2 horas por reserva.
-- Uma sala nao pode ter duas reservas sobrepostas.
-```
-
-`validador/validar.py`, o cliente de conformidade. São 36 verificações: as 20 primeiras falam HTTP direto com o seu servidor MCP, as 16 seguintes falam A2A com o seu agente. Cada uma imprime PASS ou FAIL com o motivo, e o processo termina com código de saída 0 somente se todas passarem. Ele imprime, na primeira linha, o trace-id que vai usar no header `traceparent`.
-
-`exemplos/wire/`, os JSON de request e response de cada passo dos dois protocolos, na forma exata que o validador envia e espera.
-
-### Portas
-
-O validador assume o agente em `7300`, com o endpoint JSON-RPC em `/a2a` e o card em `/.well-known/agent-card.json`, e o servidor MCP em `7301`, com o endpoint Streamable HTTP em `/mcp`. Você pode parametrizar por variável de ambiente, desde que os valores padrão sejam esses.
-
-## Tecnologias obrigatórias
-
-- SDK oficial do MCP na v2, alinhado à revisão `2026-07-28` da spec: `@modelcontextprotocol/server` (Node.js 20 ou superior, ESM) ou o pacote `mcp` do Python (3.10 ou superior). A escolha da linguagem é sua e não influencia a nota
-- A2A v1.0. Binding JSON-RPC 2.0 sobre HTTP
-- Python 3.10 ou superior para executar o validador
-- Versões travadas no `package.json` ou no `pyproject.toml`
-
-É proibido alterar `dados/`, `validador/` e `exemplos/`. O avaliador roda o validador a partir do repositório original, então alterar esses arquivos no fork não muda nada além de invalidar a sua entrega.
-
-É proibido usar LLM no caminho de execução do agente. Dado o mesmo pedido, o agente deve produzir sempre o mesmo resultado.
-
-As duas stacks foram verificadas contra este enunciado e ambas dão conta dele, por caminhos diferentes. Onde os SDKs divergem entre si, ou divergem da letra da spec, os critérios aceitam as duas formas, e isso está dito no ponto em que aparece. Não tente forçar o seu SDK a imitar o outro.
-
-## Comportamento esperado
-
-O fluxo completo, de ponta a ponta:
-
-1. Um cliente A2A busca o Agent Card do seu agente, descobre a skill de reserva e envia um `SendMessage` com o pedido em texto.
-2. O agente abre uma Task, chama o seu servidor MCP e, no caminho em que a sala pedida está livre, conclui a Task com um artifact descrevendo a reserva criada.
-3. Quando a sala pedida está ocupada no horário, o servidor MCP responde `input_required`, com uma elicitation pedindo a escolha entre as salas alternativas e um `requestState` opaco.
-4. O agente transforma isso em pausa: a Task vai para `TASK_STATE_INPUT_REQUIRED` com a lista de alternativas, e o `requestState` fica guardado ligado àquela Task.
-5. O cliente responde com um novo `SendMessage` referenciando a mesma Task. O agente repete o `tools/call` original com um id de JSON-RPC novo, levando `inputResponses` e o `requestState`, e o servidor conclui a reserva.
-6. A Task termina em `TASK_STATE_COMPLETED`, com o artifact da reserva. Se o cliente recusar as alternativas, a Task termina em `TASK_STATE_CANCELED`.
-
-Decisões de produto já fechadas, para não haver interpretação criativa:
-
-- O pedido chega em formato fixo, não em linguagem natural: `reservar sala=<id> inicio=<iso8601> fim=<iso8601> responsavel=<nome>`
-- A resposta à pausa também é fixa: `escolha=<id da sala>` para aceitar, ou `escolha=recusar` para recusar
-- As alternativas oferecidas são as salas livres naquele intervalo com capacidade igual ou maior que a da sala pedida, no máximo três, ordenadas por capacidade crescente e, em empate, por `id` em ordem alfabética
-- Nenhuma regra depende da data de hoje. Reservar no passado é permitido
-- A persistência de reservas pode ser em memória. Reservas criadas durante a execução precisam ser visíveis para as consultas seguintes do mesmo processo, e não precisam sobreviver a um restart. O `requestState` é a exceção: ele precisa continuar válido depois de um restart, porque o estado viaja nele e não no servidor
-
-## Regras de negócio e semântica de erros
-
-As mensagens abaixo são a fonte única de verdade. O validador exige que o texto exato apareça no conteúdo do resultado. Vários SDKs prefixam a mensagem com algo como `Error executing tool <nome>:`, e isso é aceito: o que não pode é a mensagem ser diferente.
-
-Erros de execução da tool, devolvidos com `isError: true` dentro de um resultado `complete`:
-
-- Sala que não existe em `dados/salas.json`: `Sala inexistente: <id informado>`
-- Início fora da janela de uso, ou fim fora dela: `Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00`
-- Intervalo com mais de duas horas: `Duracao acima do limite: a politica permite no maximo 2 horas`
-- Intervalo invertido ou vazio, com `fim` menor ou igual a `inicio`: `Intervalo invalido: fim deve ser posterior a inicio`
-- Conflito de horário em que nenhuma sala alternativa atende à regra de alternativas: `Sem alternativas disponiveis no intervalo`
-
-Erros de protocolo, devolvidos como `error` de JSON-RPC:
-
-- Tool que não existe: a chamada precisa ser recusada. A spec trata isso como erro de protocolo `-32602`, mas alguns SDKs devolvem erro de execução com `isError: true`; os dois são aceitos
-- Request sem `io.modelcontextprotocol/protocolVersion` ou sem `io.modelcontextprotocol/clientCapabilities` no `_meta`: `-32602`, e a resposta HTTP é `400`
-- Request que exige elicitation vindo de cliente que não declarou a capability de elicitation em form mode: `-32021`, com `data.requiredCapabilities` listando o que faltou, e resposta HTTP `400`
-- `requestState` que falha na verificação de integridade ou que expirou: `-32602`. A mensagem é a que o seu SDK produzir
-- `resources/read` de uma URI que não existe: `-32602`. Devolver `contents` vazio é proibido pela spec
-
-Não é erro, e deve concluir normalmente:
-
-- Recusa do usuário na elicitation, com `action` igual a `decline` ou `cancel`. O resultado é `complete`, com `isError` ausente ou `false`, e o `structuredContent` traz `reservado` igual a `false` mais um `motivo`
-
-## Requisitos
-
-### 1. Servidor MCP
-
-Conceitos do curso: os três papéis e as duas camadas (M2 aula 1), o modelo stateless com metadados por request (M2 aula 1), tools e resources separados por quem controla (M2 aula 2), os dois tipos de erro (M3 aula 6), stderr no lugar do logging depreciado (M3 aula 6), Streamable HTTP (M4 aulas 4 a 6).
-
-- Transporte Streamable HTTP, endpoint único, atendendo na porta `7301`
-- Rejeitar com `-32602` e HTTP `400` qualquer request sem os campos obrigatórios de `_meta`, sem tentar inferir versão ou capabilities de request anterior
-- Declarar as capabilities de `tools` e `resources`
-- Três tools, todas com `inputSchema` que é um objeto JSON Schema válido
-- `listar_salas`, sem parâmetros, devolvendo as salas com `structuredContent` conforme um `outputSchema` declarado, e também o JSON serializado em um bloco de texto, por compatibilidade
-- `consultar_disponibilidade`, com `sala`, `inicio` e `fim`, devolvendo se o intervalo está livre e, se não estiver, as reservas em conflito. Ela aplica as mesmas validações de sala e de política que a reserva, e devolve os mesmos erros de execução
-- `reservar_sala`, com `sala`, `inicio`, `fim` e `responsavel`, criando a reserva quando o intervalo está livre e dentro da política
-- As três tools devolvem `structuredContent` além do bloco de texto. No caso da reserva concluída, o `structuredContent` traz `reserva`, `reservado`, `sala`, `inicio`, `fim`, `responsavel` e `politica`, como no bloco de contratos
-- Um resource na URI `politica://uso`, devolvendo o conteúdo de `dados/politica-de-uso.md` com `mimeType` `text/markdown`
-- Cada request recebido é registrado no stderr com, no mínimo, o método, o id e o valor do `traceparent` quando ele vier no `_meta`
-
-### 2. O ciclo de MRTR na reserva
-
-Conceitos do curso: MRTR como resposta à ausência de sessão (M2 aula 3), elicitation em form mode e o que ela não pode carregar (M2 aula 3), capability negotiation por request (M2 aula 1), handle não é autenticação (M4 aula 1).
-
-- Quando o intervalo pedido conflita com uma reserva existente, `reservar_sala` responde com `resultType` igual a `input_required`
-- O `inputRequests` é um mapa com uma única entrada, cujo valor é um request `elicitation/create` em `mode` form. A chave é atribuída pelo servidor e o cliente devolve exatamente a mesma chave no `inputResponses`. Não fixamos o texto dela, porque cada SDK a gera de um jeito
-- O `requestedSchema` da elicitation é plano, com uma propriedade `sala` do tipo string restrita às salas alternativas calculadas pela regra já fechada acima. Com duas ou mais alternativas isso é um `enum`; com uma só, alguns geradores de schema emitem `const`, e ambos são aceitos
-- Se não houver nenhuma alternativa, não há elicitation: a tool devolve `isError: true` com a mensagem definida nas regras de negócio
-- O `requestState` é protegido por integridade, com HMAC ou AEAD, e carrega uma expiração entre 5 e 30 minutos. Assinar é obrigatório, cifrar é opcional: o que o avaliador testa é que uma adulteração seja detectada
-- O `requestState` carrega tudo que o servidor precisa para reconstruir o pedido. O servidor não guarda nada em memória entre o `input_required` e o retry, e um retry apresentado depois de o processo ser reiniciado precisa funcionar
-- A chave de integridade vem da variável de ambiente `REQUEST_STATE_SECRET`, nunca do código, e tem no mínimo 32 bytes de aleatoriedade. Gere a sua com `python3 -c "import secrets; print(secrets.token_hex(32))"`. Documente no README como gerá-la e exportá-la, nunca o valor que você usou: o repositório é público
-- Um `requestState` adulterado ou expirado é rejeitado com `-32602`
-- No retry, os argumentos que o cliente reenvia não são confiáveis. Se eles divergirem do que foi selado, a divergência não pode tomar efeito: ou o servidor rejeita o estado, ou usa os valores selados. Os dois caminhos são aceitos
-- O servidor não envia elicitation para cliente que não declarou a capability de elicitation em form mode: nesse caso responde `-32021`
-- No retry, o servidor lê `inputResponses` e `requestState` de dentro de `params`, reconstrói o pedido original a partir do próprio `requestState` e conclui a operação
-- `action` igual a `decline` ou `cancel` conclui sem reservar, conforme a semântica já fechada
-
-### 3. O agente como host MCP
-
-Conceitos do curso: host cria clientes e agrega contexto (M2 aula 1), descoberta em runtime contra schema hardcoded (M1 aula 4), resource é escolha da aplicação (M2 aula 2), trace context reservado no `_meta` (M6 aula 4).
-
-- O agente descobre as ferramentas por `tools/list` antes da primeira chamada, e não carrega uma lista fixa no código
-- O agente lê o resource `politica://uso` e extrai dele a versão declarada na primeira linha
-- Todo request MCP emitido pelo agente carrega os campos obrigatórios de `_meta` e declara a capability de elicitation em form mode, na forma `{"elicitation": {"form": {}}}`
-- Todo request MCP emitido pelo agente carrega os headers que o transporte espelha do corpo: `MCP-Protocol-Version`, `Mcp-Method` e, em `tools/call` e `resources/read`, `Mcp-Name`. Header que não bate com o corpo é recusado com `-32020`
-- Quando o cliente A2A envia o header `traceparent`, o agente propaga o mesmo trace-id no `traceparent` dentro do `_meta` de todos os requests MCP daquela Task. O span-id pode ser novo, o trace-id não
-- Um erro de execução da tool, com `isError: true`, termina a Task em `TASK_STATE_FAILED` com a mensagem exata da tool visível no histórico da Task. É assim que um pedido de sala inexistente chega de volta ao cliente A2A
-
-### 4. O agente como servidor A2A
-
-Conceitos do curso: Agent Card como identidade pública e descoberta por well-known URI (M5 aula 2), Task com identidade, estado e produto (M5 aulas 3 e 4), opacidade do agente (M6 aula 1).
-
-- `GET /.well-known/agent-card.json` devolve o Agent Card, na forma da v1.0
-- O card declara a identidade, a interface JSON-RPC com a URL do endpoint A2A e a versão de protocolo `1.0`, as capabilities do agente, e uma skill com `id` igual a `reservar-sala`. A forma exata dos campos é a da v1.0, e o exemplo fiel está em `exemplos/wire/07-a2a-agent-card.json`
-- O endpoint A2A, em `/a2a`, aceita `SendMessage` e `GetTask` no binding JSON-RPC
-- Um `SendMessage` sem `taskId` abre uma Task nova, com `id` e `contextId` próprios
-- A Task transita por `TASK_STATE_SUBMITTED` e `TASK_STATE_WORKING` antes de terminar, e `GetTask` reflete o estado corrente a qualquer momento
-- A conclusão com sucesso produz um artifact de `name` igual a `reserva`, cujo conteúdo é o JSON da reserva criada, incluindo o campo `politica` com a versão lida do resource
-- Estado terminal é definitivo: uma Task `COMPLETED`, `CANCELED` ou `FAILED` não volta a `WORKING`. Um `SendMessage` referenciando uma Task em estado terminal é recusado com erro
-
-### 5. A ponte
-
-Conceitos do curso: estado nomeado e passado explicitamente nas duas camadas (M2 aula 2, M5 aula 4), estado interrompido contra estado terminal (M5 aula 4), o triplo papel do agente (M6 aula 1).
-
-- Ao receber `input_required` do servidor MCP, o agente coloca a Task em `TASK_STATE_INPUT_REQUIRED` e devolve, como mensagem de texto da Task, exatamente a linha `alternativas: <ids separados por virgula e espaco>`, na mesma ordem em que vieram no `enum` da elicitation. Sem prefixo, sem saudação, porque o avaliador compara duas pausas iguais byte a byte
-- O `requestState` recebido fica guardado no agente associado àquela Task, e não é exposto no card, no artifact nem em nenhuma mensagem devolvida ao cliente A2A
-- O `SendMessage` de continuação traz `taskId` e o texto `escolha=<valor>`. Uma escolha fora do `enum` mantém a Task em `TASK_STATE_INPUT_REQUIRED` e repete a lista de alternativas
-- O retry ao servidor MCP usa um id de JSON-RPC diferente do request inicial, e leva `inputResponses` com a mesma chave que veio no `inputRequests` e o `requestState` ecoado sem modificação
-- `escolha=recusar` vira `action` igual a `decline` na elicitation, e a Task termina em `TASK_STATE_CANCELED`
-- O estado pausado é por Task: dois pedidos em conflito, pausados ao mesmo tempo, terminam cada um com a sua própria reserva, sem trocar de `requestState`
-
-### 6. README
-
-Substitua o `README.md` do starter pela documentação da sua entrega, com estas seções:
-
-- Como rodar: os comandos exatos para subir os dois processos e para rodar o validador, a partir de um clone limpo
-- Onde a ponte acontece: um parágrafo apontando o ponto do código em que o `input_required` do MCP vira `TASK_STATE_INPUT_REQUIRED`, e o ponto em que o `requestState` volta para o servidor
-- Decisões técnicas: como você protegeu o `requestState`, por quanto tempo ele vale, e onde guardou o estado das Tasks
-- Saída do validador: a saída completa da última execução, colada em bloco de código
-
-## Restrições não negociáveis
-
-- Dois processos separados. O agente fala com o servidor MCP por HTTP, como um cliente MCP de verdade. Importar a função da tool direto no código do agente descaracteriza a entrega
-- O agente não implementa regra de negócio de sala. Conflito, política e alternativas são decisão do servidor MCP. O agente traduz protocolo, não domínio
-- Nada de sessão. Nenhum dos dois lados pode inferir versão, capabilities ou contexto a partir de request anterior ou de conexão aberta. Isso é sobre estado de protocolo, não sobre o seu processo: manter um objeto cliente vivo entre chamadas é normal e recomendado
-- O `requestState` é opaco para o agente: guardar, ecoar, nunca abrir, interpretar nem reconstruir, mesmo que o conteúdo seja legível
-- Sem LLM no caminho de execução
-- Se você encontrar uma limitação real no SDK que impeça algum item, documente no README com o trecho da evidência em vez de contornar reescrevendo o protocolo
-
-## Fora de escopo
-
-- Autenticação e autorização em qualquer uma das camadas. Sem OAuth, sem token, sem `securitySchemes` preenchido de verdade no card
-- Streaming. Nada de `SendStreamingMessage`, SSE ou push notification
-- Refinamento de Task, `referenceTaskIds` e continuidade entre Tasks diferentes
-- Card estendido autenticado e assinatura JWS do card
-- Prompts como primitivo do MCP, subscriptions e progress
-- Container, compose, deploy e gateway
-- Spans e atributos de OpenTelemetry. O que se exige é a propagação do `traceparent` e o registro dele em log, nada além disso
-- Concorrência de escrita, transação e corrida entre duas reservas do mesmo intervalo criadas no mesmo milissegundo
-- Persistência em disco das reservas, e qualquer expectativa de que elas sobrevivam a um restart
-- Interface gráfica de qualquer tipo
-
-## Contratos
-
-Os exemplos abaixo omitem campos que a spec exige mas que não mudam o entendimento. A forma completa está em `exemplos/wire/`.
-
-Conflito, com o servidor pedindo a escolha:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 7,
-  "result": {
-    "resultType": "input_required",
-    "inputRequests": {
-      "<chave atribuida pelo servidor>": {
-        "method": "elicitation/create",
-        "params": {
-          "mode": "form",
-          "message": "A sala pedida esta ocupada nesse intervalo. Escolha uma alternativa.",
-          "requestedSchema": {
-            "type": "object",
-            "properties": {
-              "sala": { "type": "string", "enum": ["sala-fusca", "sala-mirante"] }
-            },
-            "required": ["sala"]
-          }
-        }
-      }
-    },
-    "requestState": "<opaco>"
-  }
-}
+```bash
+python3 -c "import json; print(json.dumps(json.load(open('exemplos/wire/08-a2a-send-message.json', encoding='utf-8'))['request']['body']))" > pedido.json
+curl -s http://localhost:7300/a2a -H 'Content-Type: application/json' \
+  -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' -d @pedido.json
 ```
 
-O retry, com id novo:
+O roteiro completo do avaliador está em [`evidencias/roteiro_p13.py`](evidencias/roteiro_p13.py), com PASS ou FAIL por item. Ele cobre pausa, continuação, recusa, escolha inválida, erro de domínio, `requestState` adulterado, capabilities, isolamento entre Tasks, vazamento e retry depois do restart. O modo de uso está no cabeçalho do script e na seção 6 do relatório.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 8,
-  "method": "tools/call",
-  "params": {
-    "name": "reservar_sala",
-    "arguments": {
-      "sala": "sala-garagem",
-      "inicio": "2026-11-03T14:00:00-03:00",
-      "fim": "2026-11-03T15:00:00-03:00",
-      "responsavel": "Marty"
-    },
-    "inputResponses": {
-      "<a mesma chave que veio no inputRequests>": { "action": "accept", "content": { "sala": "sala-fusca" } }
-    },
-    "requestState": "<opaco>",
-    "_meta": {
-      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-      "io.modelcontextprotocol/clientCapabilities": { "elicitation": { "form": {} } },
-      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    }
-  }
-}
+## Onde a ponte acontece
+
+**Ida: do `input_required` à Task pausada.**
+
+1. O `SendMessage` chega em `POST /a2a` (`agente/src/a2a/servidor.ts`, `criarAplicacao`). Ali o request é registrado e o envelope é validado. O `DefaultRequestHandler` do SDK A2A é estendido por `ManipuladorDaCentral` (`agente/src/a2a/manipulador.ts`). Ele cria a Task e chama `ExecutorDeReservas.execute` (`agente/src/a2a/executor.ts`), que segue por `#iniciar`. O `traceparent` do header é lido por `traceparentDaChamada`.
+2. `ServicoDeReserva.reservar` (`agente/src/a2a/reserva.ts`) pede ao Host MCP, nesta ordem:
+   - `HostMcp.descobrir`: `tools/list`;
+   - `HostMcp.lerPolitica`: `resources/read politica://uso`;
+   - `HostMcp.executar`: `tools/call reservar_sala`.
+   O `tools/call` é feito por `HostMcp.#chamar` (`agente/src/host/host.ts`) através de `ClienteMcp.chamarTool` (`agente/src/mcp/cliente.ts`).
+3. O resultado com `resultType: "input_required"` é reconhecido em `classificar` (`agente/src/mcp/resultado.ts`). Os pedidos de `inputRequests` são lidos em `lerPedidos` (`agente/src/mcp/mrtr.ts`), sem nenhuma resposta automática.
+4. Em `HostMcp.#chamar`, o `requestState` é **preservado intacto** dentro de uma `Continuacao` (`criarContinuacao`, `agente/src/host/continuacao.ts`). A `Continuacao` é um valor congelado, que guarda também a tool, os argumentos originais, a chave e o schema da pergunta, e o `traceparent`.
+5. **Este é o ponto em que o `input_required` vira `TASK_STATE_INPUT_REQUIRED`.**
+   - `ServicoDeReserva.#traduzir` (caso `input_required`) chama `perguntaDe` (`agente/src/a2a/ponte.ts`). A função monta a mensagem `alternativas: …` na ordem em que o servidor mandou.
+   - `ExecutorDeReservas.#publicarDesfecho` (caso `pausada`) guarda a continuação por `taskId` em `RetomadasPendentes.guardar` (`agente/src/a2a/tarefas/retomadas.ts`). Ele faz isso **antes** de publicar o status `TASK_STATE_INPUT_REQUIRED` com as alternativas.
+   - Esse mapa privado fica fora da Task. Por isso o `requestState` nunca aparece em `SendMessage` nem em `GetTask`.
+
+**Volta: do novo `SendMessage` ao retry MCP.**
+
+6. Um `SendMessage` com `message.taskId` chega em `ManipuladorDaCentral.sendMessage`. O manipulador só deixa passar uma continuação por vez, e só se a Task estiver em `INPUT_REQUIRED`. Task terminal recebe `-32004`. O executor segue por `#continuar`.
+7. `lerEscolha` (`agente/src/a2a/ponte.ts`) traduz o texto:
+   - `escolha=<sala>` vira `{ action: "accept", content: { sala } }`;
+   - `escolha=recusar` vira `{ action: "decline" }`;
+   - uma opção fora da lista é inválida, e a Task continua pausada com a mesma mensagem, sem nenhum request MCP.
+8. **Este é o ponto em que o `requestState` volta para o servidor.**
+   - `ServicoDeReserva.retomar` chama `HostMcp.continuar` (`agente/src/host/host.ts`).
+   - `HostMcp.continuar` monta `inputResponses` na **mesma chave** da pergunta (`normalizar`, `problemasDasRespostas` em `agente/src/mcp/mrtr.ts`) e um `DadosDeRetry` com o `requestState` da continuação, byte a byte.
+   - `ClienteMcp.chamarTool` coloca `inputResponses` e `requestState` em `params`, ao lado dos `arguments` originais, e envia um **request novo**.
+9. O id JSON-RPC novo vem do contador do `Client` do SDK MCP, um a cada `request`. Os ids nunca se repetem, e o retry nunca reaproveita o id da pausa. No validador, por exemplo, a pausa foi o id 6 e o retry, o id 7 ([evidência](evidencias/05-auditoria-logs-mcp.txt)).
+10. O desfecho é decidido em `ServicoDeReserva.#traduzir` e publicado por `ExecutorDeReservas.#publicarDesfecho`:
+    - reserva confirmada pelo `structuredContent` dá o artifact `reserva` e `TASK_STATE_COMPLETED`;
+    - `decline` concluído com `reservado: false` dá `TASK_STATE_CANCELED`;
+    - erro de domínio (`isError`) dá `TASK_STATE_FAILED` com a mensagem da tool;
+    - a sala escolhida ocupada nesse meio tempo gera uma nova pausa.
+
+No servidor MCP, o outro lado da ponte está em `servidor-mcp/src/tools/reservar-sala.ts`. Na primeira rodada, `reservarOuPerguntar` sela o pedido com `selar` e devolve `inputRequired`. No retry, o handler recebe o selo já verificado em `ctx.mcpReq.requestState()`, e `retomar` lê a resposta com `inputResponse(…, selo.chave)`.
+
+## Decisões técnicas
+
+| Tema | Decisão | Por quê |
+|---|---|---|
+| Stack | TypeScript executado por `tsx`, Node ≥ 22, sem etapa de build | Os dois SDKs oficiais são TypeScript. Um comando só para subir, com stack trace apontando para o `.ts`. A checagem de tipos fica em `npm run check` |
+| SDK MCP | `@modelcontextprotocol/server` e `@modelcontextprotocol/client` 2.4.0 | Suportam a revisão `2026-07-28` (stateless, `_meta` por request, MRTR, `createRequestStateCodec`) |
+| Transporte MCP | Streamable HTTP via `createMcpHandler`, com `legacy: 'reject'` e `responseMode: 'json'` | Sem sessão e sem `initialize`. Respostas sempre em JSON, que é o que o validador lê |
+| Protocolo A2A | `@a2a-js/sdk` 1.3.0, A2A 1.0, binding JSON-RPC, sobre `express` 5.3.0 | O SDK já implementa `SendMessage`, `GetTask`, os erros `-32001` e `-32004` e o histórico. Um middleware põe `A2A-Version: 1.0` quando o header falta |
+| Reservas | Em memória no servidor MCP, carregadas de `dados/` no boot (`servidor-mcp/src/dominio/agenda.ts`) | O enunciado exclui persistência. Todo restart do MCP volta à agenda original |
+| Tasks | Em memória no agente, num `TaskStore` próprio (`RepositorioDeTasks`, `agente/src/a2a/tarefas/repositorio.ts`) que impõe a máquina de estados de `estados.ts` | Uma Task terminal não muda mais, e uma transição fora da tabela é recusada. **Um restart do agente perde todas as Tasks**, o que o contrato aceita |
+| Continuações MRTR | Num `Map` privado por `taskId` (`RetomadasPendentes`), fora da Task, consumido por uma única retomada | A Task é pública, e o `requestState` não pode vazar. Cada Task só enxerga a própria continuação |
+| Proteção do `requestState` | `createRequestStateCodec` do SDK: `v1.` + base64url(selo + `exp`) + HMAC-SHA256 (`servidor-mcp/src/estado-mrtr.ts`) | É **integridade, não sigilo**: o conteúdo é legível, mas qualquer alteração invalida o MAC |
+| Chave | `REQUEST_STATE_SECRET`, só do ambiente ou do `.env`, com 64 dígitos hex ou mais (`servidor-mcp/src/config.ts`) | Nunca fica no código, em log ou em resposta. Sem a chave, o processo não sobe |
+| Validade | `exp` dentro da parte assinada; TTL de **900 s (15 min)**, configurável entre 300 e 1800 | Dá tempo de um humano responder, sem deixar uma continuação válida para sempre |
+| Descoberta de tools | `tools/list` a cada Task, antes do primeiro `tools/call` (`HostMcp.descobrir`, `agente/src/host/catalogo.ts`) | O agente não tem lista fixa no código: só chama uma tool que o servidor anunciou e confere os argumentos contra o `inputSchema` recebido |
+| Política | `resources/read politica://uso` a cada Task; a versão sai da primeira linha | O artifact traz a versão confirmada pela reserva do servidor, e o agente confere que é a mesma que leu |
+| `traceparent` | O agente repassa o trace-id do header A2A em `_meta.traceparent`, com um parent-id novo por request (`agente/src/trace.ts`). Na retomada, vale o trace da Task. Sem header, nada é enviado | O trace do cliente chega ao log do MCP sem que o agente invente um. Não há OpenTelemetry, porque o desafio pede só propagação e log |
+| LLM | Nenhum. O pedido tem formato fixo (`agente/src/a2a/tarefas/pedido.ts`) | É determinístico, e o A2A continua opaco para quem chama |
+| Regras de negócio | Só no servidor MCP (`servidor-mcp/src/dominio/regras.ts`) | Conflito, alternativas, janela e duração são decididos no MCP. O agente só traduz protocolo |
+
+### Segurança do `requestState`
+
+- **Como é protegido.** No conflito, `selar` grava no selo o pedido original, as alternativas oferecidas e a chave da pergunta. O codec do SDK assina o selo com HMAC-SHA256 usando `REQUEST_STATE_SECRET`, e o prazo `exp` fica dentro da parte assinada. O servidor não guarda nada entre a pausa e o retry.
+- **Como é verificado.** `verificarSelo` está ligado em `ServerOptions.requestState.verify` (`servidor-mcp/src/servidor.ts`), e o SDK o roda **antes** do handler. Assinatura inválida, estado vencido, formato quebrado ou selo de outra versão ou de outra tool dão `-32602`, e nada é gravado. A resposta nunca ecoa o estado nem o segredo.
+- **Argumentos adulterados.** No retry, o pedido vem do selo, não dos `arguments` reenviados. A escolha precisa ser uma das alternativas seladas.
+- **Depois de um restart.** Para verificar o estado, basta a chave. Um servidor novo com o mesmo segredo aceita um `requestState` emitido pelo anterior. A reserva feita antes do restart não sobrevive, porque a agenda é em memória. O que sobrevive é a continuação.
+- **O agente não interpreta o estado.** Ele o guarda e o reenvia byte a byte. Não decodifica, não valida e não reconstrói. A ponte também não sabe por que um retry foi recusado: um `-32602` na retomada vira `FAILED` com a mensagem "prazo vencido ou estado invalido".
+
+### Tasks
+
+- **Criação e identidade.** O SDK cria a Task no primeiro `SendMessage`, com `id` e `contextId` em UUID. O executor publica `SUBMITTED` com o pedido no histórico e depois `WORKING`.
+- **Estados usados.** `SUBMITTED`, `WORKING`, `INPUT_REQUIRED`, `COMPLETED`, `CANCELED` e `FAILED`, com as transições de `agente/src/a2a/tarefas/estados.ts`.
+- **Consulta.** `GetTask` lê o `RepositorioDeTasks` e devolve o estado, o histórico e os artifacts.
+- **Retomada.** Só uma Task em `INPUT_REQUIRED` pode ser retomada, e só por uma mensagem de cada vez. Uma Task terminal recusa qualquer mensagem nova com `-32004`.
+- **Isolamento.** Cada Task tem a própria continuação, a própria chave e o próprio `requestState`. As Tasks são gravadas como cópias e não compartilham objetos.
+
+### Rastreabilidade no log do MCP
+
+O servidor MCP escreve uma linha por request no stderr, **antes** de o SDK processar:
+
+```
+[mcp] recv method=tools/list id=0 traceparent=00-<trace-id>-<span>-01
+[mcp] recv method=tools/call id=6 name=reservar_sala traceparent=00-<trace-id>-<span>-01
+[mcp] recv method=tools/call id=7 name=reservar_sala traceparent=00-<trace-id>-<span>-01
 ```
 
-O artifact da Task concluída:
+Para conferir, procure no stderr o trace-id impresso pelo validador. A sequência do agente começa com `tools/list` e `resources/read`, antes do primeiro `tools/call`. A pausa e o retry aparecem como dois `tools/call reservar_sala` com ids diferentes. O validador também faz um `tools/call` direto com o mesmo trace; o id dele é uma string entre aspas. O agente registra `[a2a] recv …` e `[a2a] task=… trace=…` no próprio stderr.
 
-```json
-{
-  "name": "reserva",
-  "parts": [
-    {
-      "text": "{\"reserva\":\"res-0003\",\"sala\":\"sala-fusca\",\"inicio\":\"2026-11-03T14:00:00-03:00\",\"fim\":\"2026-11-03T15:00:00-03:00\",\"responsavel\":\"Marty\",\"politica\":\"2026-11-01\"}"
-    }
-  ]
-}
+## Saída do validador
+
+Última execução válida: 20/11/2026, Windows 11, Node v26.13.0, Python 3.15.2, sobre o commit `b3625c1`, com os dois processos recém-iniciados. O código dos dois processos não mudou desde então. Arquivo original: [`evidencias/04-validador.txt`](evidencias/04-validador.txt).
+
+Comando (no Windows o executável é `python`):
+
+```
+python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
 ```
 
-## Critérios de Aceite
+Saída completa:
 
-Todos obrigatórios.
+```
+$ python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
+trace-id desta execucao: 1d9558549e0a087126d13524029f5d8e
+procure esse valor no stderr do servidor MCP para conferir a propagacao do traceparent.
 
-**Servidor MCP**
+PASS 01 tools/list traz as tres tools
+PASS 02 toda tool tem inputSchema de objeto
+PASS 03 listar_salas devolve structuredContent e o mesmo JSON em texto
+PASS 04 _meta sem protocolVersion devolve -32602 e HTTP 400
+PASS 05 _meta sem clientCapabilities devolve -32602 e HTTP 400
+PASS 06 tool inexistente e recusada, por -32602 ou por isError
+PASS 07 resources/read de politica://uso devolve a politica
+PASS 08 resources/read de URI inexistente devolve -32602
+PASS 09 sala inexistente devolve isError com a mensagem exata
+PASS 10 fora da janela devolve isError com a mensagem exata
+PASS 11 duracao acima de 2h devolve isError com a mensagem exata
+PASS 12 intervalo invertido devolve isError com a mensagem exata
+PASS 13 conflito devolve input_required com inputRequests e requestState
+PASS 14 a elicitation e form mode e oferece as alternativas na ordem certa
+PASS 15 conflito sem a capability elicitation devolve -32021 e HTTP 400
+PASS 16 retry com inputResponses e requestState conclui a reserva
+PASS 17 requestState adulterado e rejeitado com -32602
+PASS 18 argumentos adulterados no retry nao tomam efeito
+PASS 19 recusa conclui sem reservar e sem isError
+PASS 20 conflito sem alternativa possivel devolve isError com a mensagem exata
 
-- [ ] Sobe na porta `7301` em Streamable HTTP e responde a `tools/list` com as três tools
-- [ ] Toda tool tem `inputSchema` que é um objeto JSON Schema válido
-- [ ] `listar_salas` devolve `structuredContent` conforme o `outputSchema` declarado e o mesmo JSON serializado em bloco de texto
-- [ ] Request sem `io.modelcontextprotocol/protocolVersion` ou sem `io.modelcontextprotocol/clientCapabilities` recebe `-32602` com HTTP `400`
-- [ ] `tools/call` de tool inexistente é recusado, por `-32602` ou por `isError`
-- [ ] `resources/read` de `politica://uso` devolve o conteúdo de `dados/politica-de-uso.md`, e de URI inexistente devolve `-32602`
-- [ ] Sala inexistente, janela violada, duração acima do limite e intervalo invertido devolvem `isError: true` com as mensagens exatas definidas neste enunciado
-- [ ] O stderr do processo registra método, id e `traceparent` de cada request
+PASS 21 agent card responde 200 no well-known com JSON
+PASS 22 o card declara a interface JSON-RPC com url e versao 1.0
+PASS 23 o card declara a skill reservar-sala
+PASS 24 SendMessage com sala livre conclui a Task
+PASS 25 o artifact chama reserva e traz a versao da politica
+PASS 26 GetTask devolve id, contextId e estado corrente
+PASS 27 SendMessage com sala ocupada pausa a Task
+PASS 28 a Task pausada lista as alternativas na ordem certa
+PASS 29 escolha fora do enum mantem a Task pausada
+PASS 30 a continuacao conclui a Task na sala escolhida
+PASS 31 SendMessage em Task terminal e recusado
+PASS 32 a recusa termina a Task em CANCELED
+PASS 33 duas Tasks pausadas ao mesmo tempo concluem cada uma com a sua reserva
+PASS 34 nenhuma resposta A2A carrega o requestState
+PASS 35 sala inexistente termina a Task em FAILED com a mensagem da tool
+PASS 36 o agente e deterministico: o mesmo pedido produz a mesma pausa
 
-**MRTR**
+resumo: 36 passaram, 0 falharam, de 36 verificacoes
 
-- [ ] Reserva em intervalo ocupado devolve `resultType` igual a `input_required`, com uma única entrada em `inputRequests`, em form mode, e um `requestState` presente
-- [ ] O `requestedSchema` é plano e restringe a escolha às alternativas calculadas pela regra do enunciado, na ordem definida
-- [ ] O mesmo pedido, vindo de cliente que não declarou elicitation em form mode, recebe `-32021` com `data.requiredCapabilities` e HTTP `400`
-- [ ] O retry com `inputResponses` e `requestState` conclui a reserva e devolve `resultType` igual a `complete`
-- [ ] `requestState` adulterado recebe `-32602`
-- [ ] Um retry com argumentos adulterados não produz reserva com os valores adulterados
-- [ ] Um retry com `requestState` válido conclui a reserva mesmo que o processo do servidor MCP tenha sido reiniciado entre o `input_required` e o retry
-- [ ] A chave de integridade vem de `REQUEST_STATE_SECRET`, com no mínimo 32 bytes, e não há segredo hardcoded no código
-- [ ] Recusa com `action` igual a `decline` conclui sem reservar e sem `isError`
+exit=0
+```
 
-**Agente como host MCP**
+Código de saída: **0** (`$LASTEXITCODE` no PowerShell). O log do servidor MCP dessa execução está em [`evidencias/logs/mcp-validador.log`](evidencias/logs/mcp-validador.log), e a auditoria dele, em [`evidencias/05-auditoria-logs-mcp.txt`](evidencias/05-auditoria-logs-mcp.txt).
 
-- [ ] O log do servidor MCP mostra um `tools/list` antes do primeiro `tools/call` do agente
-- [ ] O log do servidor MCP mostra o `traceparent` com o mesmo trace-id enviado pelo validador no header da chamada A2A
-- [ ] Os requests do agente declaram a capability de elicitation em form mode
+## Limitações conhecidas
 
-**Agente como servidor A2A**
+Tudo abaixo é aceito pelo enunciado ou está fora do escopo dele.
 
-- [ ] `GET /.well-known/agent-card.json` responde 200 com um card v1.0 válido
-- [ ] O card declara a interface JSON-RPC com a URL do endpoint e a versão de protocolo `1.0`, e uma skill de `id` `reservar-sala`
-- [ ] `SendMessage` com sala livre termina a Task em `TASK_STATE_COMPLETED` com o artifact `reserva`
-- [ ] O artifact traz a reserva criada e o campo `politica` com o valor lido do resource
-- [ ] `GetTask` devolve `id`, `contextId`, estado corrente e o artifact quando existir
-- [ ] `SendMessage` referenciando Task em estado terminal é recusado com erro
-- [ ] `SendMessage` pedindo uma sala inexistente termina a Task em `TASK_STATE_FAILED`, com a mensagem exata da tool visível no histórico
+- Reservas e Tasks vivem em memória: um restart do MCP volta a agenda a `dados/`, e um restart do agente perde as Tasks e as continuações pendentes. O validador e o roteiro manual pressupõem processos recém-iniciados.
+- O `requestState` é assinado, não cifrado: quem o recebe consegue ler o pedido e as alternativas, mas não alterá-los.
+- Uma continuação abandonada fica na memória do agente até o restart. Depois de 15 minutos, o servidor a recusa.
+- Diferenças em relação aos exemplos, aceitas pelo validador e explicadas no [relatório](RELATORIO-CONFORMIDADE.md#9-riscos-residuais):
+  - a chave de `inputRequests` é `escolha_de_sala`, atribuída pelo servidor;
+  - a url do card usa `localhost` e pode ser mudada por `A2A_PUBLIC_URL`;
+  - um `requestState` inválido volta com HTTP 200 e `-32602`, comportamento do SDK 2.4.0.
+- Fora do escopo: autenticação, streaming, SSE, push notifications, `CancelTask`, `ListTasks`, card estendido, OpenTelemetry, Docker e persistência.
 
-**A ponte**
-
-- [ ] `SendMessage` pedindo sala ocupada deixa a Task em `TASK_STATE_INPUT_REQUIRED` com a linha `alternativas: ` listando os ids na ordem do `enum`
-- [ ] A continuação com `escolha=<id>` conclui a Task em `TASK_STATE_COMPLETED` com a reserva na sala escolhida
-- [ ] A continuação com `escolha=recusar` termina a Task em `TASK_STATE_CANCELED`
-- [ ] Escolha fora do `enum` mantém a Task em `TASK_STATE_INPUT_REQUIRED`
-- [ ] Duas Tasks pausadas ao mesmo tempo concluem cada uma com a sua reserva, sem trocar de `requestState`
-- [ ] O `requestState` não aparece em nenhuma resposta A2A
-
-**Validação e entrega**
-
-- [ ] `python3 validador/validar.py` passa nas 36 verificações, com os dois processos recém-iniciados, e termina com código de saída 0
-- [ ] `dados/`, `validador/` e `exemplos/` não foram alterados
-- [ ] O agente é determinístico: o mesmo pedido, enviado duas vezes, produz o mesmo resultado, e não há dependência de SDK de provedor de LLM no `package.json` ou no `pyproject.toml`
-- [ ] O README tem as quatro seções exigidas, e os comandos funcionam a partir de um clone limpo
-
-## Fluxo do avaliador
-
-1. Clonar o fork em uma pasta limpa e seguir apenas o README do aluno.
-2. Subir o servidor MCP e o agente, cada um em um terminal, deixando o stderr do servidor MCP visível.
-3. `curl http://localhost:7300/.well-known/agent-card.json` e conferir, contra `exemplos/wire/07-a2a-agent-card.json`, a interface JSON-RPC, a versão de protocolo e a skill `reservar-sala`.
-4. Rodar `python3 validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301` e conferir que todas as verificações passam.
-5. No stderr do servidor MCP, localizar o `tools/list` anterior ao primeiro `tools/call` e o `traceparent` com o trace-id que o validador imprimiu.
-6. Ainda no stderr, localizar o par de `tools/call` de uma reserva que passou pela pausa e conferir que o id do retry é diferente do id do request inicial.
-7. Enviar manualmente um `SendMessage` pedindo `sala=sala-garagem` das 14h às 15h do dia 03/11/2026, usando `curl` com o corpo de `exemplos/wire/08-a2a-send-message.json`, conferir que a Task fica em `TASK_STATE_INPUT_REQUIRED` e que a linha de alternativas lista `sala-fusca, sala-mirante` nessa ordem.
-8. Continuar com `escolha=sala-mirante` e conferir, por `GetTask`, a Task `COMPLETED` com o artifact `reserva` apontando para `sala-mirante` e com o campo `politica`.
-9. Repetir o passo 7 e responder `escolha=recusar`, conferindo `TASK_STATE_CANCELED`.
-10. Enviar um `SendMessage` com `sala=sala-inexistente` e conferir a Task em `TASK_STATE_FAILED` com a mensagem `Sala inexistente: sala-inexistente` no histórico.
-11. Com o corpo de `exemplos/wire/03-tools-call-conflito-input-required.json`, pegar o `requestState` direto do servidor MCP, trocar um caractere e reenviar, conferindo `-32602`.
-12. Repetir o passo 11 sem alterar o `requestState`, mas reiniciando o processo do servidor MCP antes de enviar o retry, e conferir que a reserva é concluída assim mesmo.
-13. Repetir o mesmo `tools/call` de conflito sem declarar `elicitation` nas capabilities e conferir `-32021` com HTTP `400`.
-
-Um único `SendMessage` de sala ocupada precisa causar, em sequência, a abertura da Task, a chamada MCP, o `input_required`, a pausa da Task, a retomada com id novo e a reserva criada. Se qualquer um desses efeitos faltar, a entrega está incompleta.
-
-## Estrutura obrigatória do entregável
+## Estrutura do repositório
 
 ```
 .
-├── README.md              (substituido por voce)
-├── dados/                 (nao alterar)
-│   ├── salas.json
-│   ├── reservas.json
-│   └── politica-de-uso.md
-├── validador/             (nao alterar)
-│   └── validar.py
-├── exemplos/              (nao alterar)
-│   └── wire/
-├── servidor-mcp/          (voce preenche)
-└── agente/                (voce preenche)
+├── README.md                    este arquivo
+├── ARQUITETURA.md               projeto e registro dos passos
+├── RELATORIO-CONFORMIDADE.md    validação formal: matriz de requisitos, validador, testes manuais
+├── dados/                       do starter, sem alteração
+├── validador/                   do starter, sem alteração
+├── exemplos/wire/               do starter, sem alteração
+├── servidor-mcp/                processo 1 (detalhes no README da pasta)
+├── agente/                      processo 2 (detalhes no README da pasta)
+├── scripts/demo_a2a.py          demonstração manual com os envelopes de exemplos/wire
+└── evidencias/                  saídas da validação formal e roteiro do avaliador
 ```
 
-Arquivos de apoio que você criar, como scripts de subida, podem ficar na raiz.
+## Referências
 
-## Entregável
-
-- Link do repositório público no GitHub, fork do starter, com a entrega na branch `main`
-- README com os comandos de subida verificados, a explicação de onde a ponte acontece, as decisões técnicas e a saída do validador
-
-## Regras de entrega
-
-- Repositório único, a partir do fork do starter
-- Toda a entrega na branch `main`
-- A estrutura do starter deve ser mantida. Entregas que movem os dados, reescrevem o validador ou colapsam os dois processos em um não serão aceitas
-
-## Ordem de execução sugerida
-
-1. Leia `exemplos/wire/` inteiro antes de escrever qualquer linha. São dez pares de request e response capturados de uma execução real, e é o contrato que o validador cobra.
-2. Suba o servidor MCP com uma tool só, `listar_salas`, e abra o MCP Inspector nele. Confirme que o `_meta` de cada request aparece e que a resposta traz `resultType`.
-3. Implemente `consultar_disponibilidade` e as regras da política, com os quatro erros de execução e as mensagens exatas.
-4. Implemente `reservar_sala` só no caminho feliz, sem MRTR.
-5. Adicione o MRTR: primeiro o `input_required` com a elicitation, depois o `requestState` protegido, por último a checagem de capability e as rejeições.
-6. Construa o agente como cliente MCP puro, sem A2A ainda: um script que descobre as tools, lê o resource e completa o ciclo de MRTR respondendo a elicitation na mão.
-7. Só então coloque o A2A por fora: card, `SendMessage`, `GetTask` e a máquina de estados da Task.
-8. Costure a ponte: pausa da Task, guarda do `requestState`, retomada com id novo.
-9. Rode o validador, corrija, repita.
-10. Do zero: mate os dois processos, clone o seu próprio fork em uma pasta limpa, siga só o seu README e percorra a checklist de critérios item por item antes do push final.
-
-## Dicas finais
-
-O erro mais caro deste desafio é implementar o MRTR como se fosse callback. Não existe canal de volta: o servidor não chama o cliente, ele termina a resposta pedindo informação, e é o cliente quem volta com um request novo. Se você se pegar procurando como manter a chamada aberta esperando o usuário responder, pare, porque o caminho é o oposto do que você está tentando. O sintoma dessa tentativa é um erro dizendo que o transporte não tem canal de volta para requests iniciados pelo servidor, e ele aparece cedo, na primeira vez que a tool tenta perguntar algo.
-
-Os dois SDKs têm MRTR de primeira classe, e o caminho não se chama elicitation: procure por `input_required` no SDK Python e por `inputRequired` no de TypeScript, e leia as docstrings do que aparecer. É de lá que sai o desenho do seu servidor.
-
-Vale o mesmo aviso do lado do agente. Se você usar o cliente MCP do SDK com um callback de elicitation, o cliente responde a pergunta sozinho e o ciclo fecha sem nunca voltar para o cliente A2A. A Task nunca pausa, e metade do desafio evapora. O agente precisa enxergar o `input_required` cru.
-
-O segundo erro mais comum é o id do retry. A spec é explícita que ele precisa ser diferente do request inicial, porque são requests independentes. Reaproveitar o id funciona em muitos SDKs e quebra na verificação.
-
-Sobre o `requestState`, a pergunta que separa a entrega boa da entrega ingênua é simples: o que acontece se eu trocar um caractere dele? Se a resposta for "o servidor processa assim mesmo" ou "o servidor explode com erro interno", falta integridade. A spec manda tratar esse campo como entrada controlada por atacante, e o avaliador vai testar exatamente isso.
-
-O instrumento de depuração deste desafio é o stderr do servidor MCP com o Inspector aberto ao lado. Quase todo problema de ponte aparece ali em segundos: o `tools/list` que nunca acontece, o `_meta` sem capability, o `traceparent` que o agente esqueceu de propagar, o retry com o id repetido.
-
-No fim, o que este desafio cobra em uma frase: o seu agente precisa ter profundidade por dentro e alcance por fora, e a única coisa que atravessa essa fronteira é estado nomeado explicitamente.
+- Desafio e starter: <https://github.com/devfullcycle/desafio-a2a-com-mcp>
+- Especificação MCP, revisão `2026-07-28`: <https://modelcontextprotocol.io/specification/2026-07-28>
+- SDK TypeScript do MCP (`@modelcontextprotocol/server` e `client`): <https://github.com/modelcontextprotocol/typescript-sdk>
+- Especificação A2A 1.0: <https://a2a-protocol.org/latest/specification/>
+- SDK JavaScript do A2A (`@a2a-js/sdk`): <https://github.com/a2aproject/a2a-js>
+- W3C Trace Context (`traceparent`): <https://www.w3.org/TR/trace-context/>

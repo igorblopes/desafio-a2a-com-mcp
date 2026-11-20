@@ -1,0 +1,4 @@
+responseMode: 'json' drops mid-call notifications. subscriptions/listen streams are always served over SSE regardless; other notifications emitted before a result are dropped.
+[mcp] pronto url=http://localhost:7301/mcp salas=5 reservas=2 politica="versao: 2026-11-01" protocolo=2026-07-28 requestStateTtl=900
+[mcp] recv method=tools/call id=66609 name=reservar_sala traceparent=00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+[mcp] mrtr evento=retry id=66609 resultado=accept escolha=sala-fusca

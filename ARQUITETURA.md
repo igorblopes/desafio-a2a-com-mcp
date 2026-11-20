@@ -1644,3 +1644,17 @@ Nenhuma mudança de código. Validação executada no PC (Windows 11, Node v26.1
 | Roteiro manual do avaliador (`evidencias/roteiro_p13.py`) | 64/64 + 2/2 depois do restart do MCP |
 
 Revisão do documento no Passo 13: corrigidas as divergências entre o plano e o código (TaskStore próprio no lugar do `InMemoryTaskStore`, TTL de 900 s, ausência de trace inventado, subida com `.env`, pré-requisitos atendidos).
+
+### Passo 14: preparação da entrega (20/11/2026)
+
+Nenhuma mudança no código dos dois processos, nas dependências nem nos scripts npm. A entrega ficou documentada e reproduzível a partir de um clone limpo:
+
+| Arquivo | Mudança |
+|---|---|
+| `README.md` | O enunciado do starter deu lugar à documentação da entrega, com as quatro seções exigidas (Como rodar, Onde a ponte acontece, Decisões técnicas, Saída do validador) e a demonstração manual |
+| `servidor-mcp/.env.example` | Modelo do `.env`, sem valor real do segredo |
+| `scripts/demo_a2a.py` | Demonstração manual com os envelopes de `exemplos/wire/08`, `09` e `10`, só com a biblioteca padrão |
+| `.gitignore` | Comentado; exceção `!evidencias/logs/*.log` para que os logs da validação formal sejam versionados |
+| `agente/README.md`, `servidor-mcp/README.md` | Defasagens corrigidas (estado do passo, contagem de testes, `npm ci`) |
+| `evidencias/01-ambiente.txt` | O caminho local da máquina foi trocado por `<raiz do repositório>` |
+| `agente/.gitkeep`, `servidor-mcp/.gitkeep` | Removidos: as pastas já têm conteúdo |

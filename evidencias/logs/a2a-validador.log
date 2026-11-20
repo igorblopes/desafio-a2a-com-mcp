@@ -1,0 +1,68 @@
+[a2a] pronto em http://localhost:7300 (card http://localhost:7300/.well-known/agent-card.json, mcp http://localhost:7301/mcp)
+[a2a] recv method=SendMessage id="e7fda374b7f9" traceparent=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01
+[a2a] task=904ca64a-d000-4f55-925c-0f5f93bdb111 trace=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01 executando
+[a2a] task=904ca64a-d000-4f55-925c-0f5f93bdb111 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=904ca64a-d000-4f55-925c-0f5f93bdb111 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=904ca64a-d000-4f55-925c-0f5f93bdb111 TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=GetTask id="4e7ee1b8872e" traceparent=-
+[a2a] recv method=SendMessage id="ba1d41f0a1a0" traceparent=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 trace=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01 executando
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 pausada (rodada 1, 2 alternativa(s))
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id="07f8bb4aaa90" traceparent=-
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 escolha invalida ("sala-aquario" nao esta entre as alternativas); continua aguardando
+[a2a] recv method=SendMessage id="d3e927271acd" traceparent=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 trace=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01 retomando (accept sala-fusca)
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=9e5b4b16-ee88-4602-94d1-0c563a8f21a8 TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id="c1a67fd357c0" traceparent=-
+[a2a] recv method=SendMessage id="a728a6f6c703" traceparent=-
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 trace=- executando
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 pausada (rodada 1, 1 alternativa(s))
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id="29481c6b8c04" traceparent=-
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 trace=- retomando (decline)
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=705830f4-75e3-4b3c-880c-9b42122e7739 TASK_STATE_WORKING -> TASK_STATE_CANCELED
+[a2a] recv method=SendMessage id="ceece8b6c62c" traceparent=-
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 trace=- executando
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 pausada (rodada 1, 1 alternativa(s))
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id="6b446e732074" traceparent=-
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e trace=- executando
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e pausada (rodada 1, 1 alternativa(s))
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id="8c064e7f145c" traceparent=-
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 trace=- retomando (accept sala-mirante)
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=2137e00f-c6db-4c2e-91e8-2a0e21e89969 TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id="f5db8c081ae3" traceparent=-
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e trace=- retomando (accept sala-mirante)
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=303e1ce8-a670-4528-aafe-72fc9901929e TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id="e5c84658e72f" traceparent=-
+[a2a] task=de337256-c980-4fa2-9b4c-f409fcdcbf7b trace=- executando
+[a2a] task=de337256-c980-4fa2-9b4c-f409fcdcbf7b nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=de337256-c980-4fa2-9b4c-f409fcdcbf7b TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=de337256-c980-4fa2-9b4c-f409fcdcbf7b falha (execucao)
+[a2a] task=de337256-c980-4fa2-9b4c-f409fcdcbf7b TASK_STATE_WORKING -> TASK_STATE_FAILED
+[a2a] recv method=SendMessage id="876de8be00b1" traceparent=-
+[a2a] task=9c063575-2aee-4f06-8ea1-a4f44bd2e93c trace=- executando
+[a2a] task=9c063575-2aee-4f06-8ea1-a4f44bd2e93c nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=9c063575-2aee-4f06-8ea1-a4f44bd2e93c TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=9c063575-2aee-4f06-8ea1-a4f44bd2e93c pausada (rodada 1, 1 alternativa(s))
+[a2a] task=9c063575-2aee-4f06-8ea1-a4f44bd2e93c TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id="89e51a01558c" traceparent=-
+[a2a] task=38583f0b-4f0d-4151-ad86-db6e0072bb1e trace=- executando
+[a2a] task=38583f0b-4f0d-4151-ad86-db6e0072bb1e nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=38583f0b-4f0d-4151-ad86-db6e0072bb1e TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=38583f0b-4f0d-4151-ad86-db6e0072bb1e pausada (rodada 1, 1 alternativa(s))
+[a2a] task=38583f0b-4f0d-4151-ad86-db6e0072bb1e TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED

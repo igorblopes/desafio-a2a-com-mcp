@@ -1,21 +1,21 @@
 # agente
 
-Hoje (Passo 12): **servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
+**Servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
 
 - `src/main.ts` e `src/a2a/`: Agent Card, `POST /a2a` (`SendMessage`, `GetTask`), Tasks em memória com máquina de estados explícita, artifact `reserva` e a **ponte**: um conflito pausa a Task (`INPUT_REQUIRED`) e um novo `SendMessage` com o mesmo `taskId` a retoma.
 - `src/mcp/`: cliente, só protocolo (transporte, `_meta`, headers, ids, erros JSON-RPC e de rede).
 - `src/host/`: Host, que organiza o uso (catálogo, política, contexto de execução, continuação MRTR, seis desfechos). Não tem nenhuma regra de salas.
 - `src/demo.ts`: aplicação de terminal que consome só o Host.
 
-Detalhes de projeto: seções "Passo 8" a "Passo 11" de [`../ARQUITETURA.md`](../ARQUITETURA.md).
+Como rodar o projeto inteiro, onde a ponte acontece e a demonstração com os envelopes oficiais: [`../README.md`](../README.md). Detalhes de projeto: [`../ARQUITETURA.md`](../ARQUITETURA.md).
 
 ## Como rodar
 
 ```powershell
 cd agente
-npm install
+npm ci             # exatamente o package-lock.json (instale também o servidor-mcp: os testes o sobem)
 npm run check      # tsc --noEmit
-npm test           # unidade, cliente, Host e A2A (sobe servidor-mcp e agente sozinhos, em portas livres)
+npm test           # unidade, cliente, Host, A2A, ponte e falhas (sobe servidor-mcp e agente sozinhos, em portas livres)
 ```
 
 ## Servidor A2A
@@ -34,7 +34,7 @@ curl -s http://localhost:7300/.well-known/agent-card.json
 
 curl -s http://localhost:7300/a2a -H 'content-type: application/json' \
   -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
-  -d '{"jsonrpc":"2.0","id":"req-1","method":"SendMessage","params":{"message":{"messageId":"m1","role":"ROLE_USER","parts":[{"text":"reservar sala=sala-porao inicio=2026-11-25T09:00:00-03:00 fim=2026-11-25T10:00:00-03:00 responsavel=Igor"}]}}}'
+  -d '{"jsonrpc":"2.0","id":"req-1","method":"SendMessage","params":{"message":{"messageId":"m1","role":"ROLE_USER","parts":[{"text":"reservar sala=sala-porao inicio=2026-11-25T09:00:00-03:00 fim=2026-11-25T10:00:00-03:00 responsavel=Marty"}]}}}'
 
 curl -s http://localhost:7300/a2a -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":"req-2","method":"GetTask","params":{"id":"<task.id da resposta anterior>"}}'
@@ -61,7 +61,7 @@ npm run demo -- --exemplo conflito                        # input_required: esco
 npm run demo -- --exemplo conflito --escolha sala-fusca   # escolha por argumento
 npm run demo -- --exemplo conflito --recusar              # decline (ou --cancelar)
 npm run demo -- --exemplo conflito --escolha sala-x       # resposta_invalida: nada é enviado
-npm run demo -- --sala sala-porao --inicio 2026-11-25T09:00:00-03:00 --fim 2026-11-25T10:00:00-03:00 --responsavel Igor
+npm run demo -- --sala sala-porao --inicio 2026-11-25T09:00:00-03:00 --fim 2026-11-25T10:00:00-03:00 --responsavel Marty
 npm run demo -- --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 ```
 

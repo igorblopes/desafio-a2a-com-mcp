@@ -1,0 +1,65 @@
+[a2a] pronto em http://localhost:7300 (card http://localhost:7300/.well-known/agent-card.json, mcp http://localhost:7301/mcp)
+[a2a] recv method=SendMessage id=480118 traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 trace=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01 executando
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 pausada (rodada 1, 2 alternativa(s))
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id=652418 traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 escolha invalida ("sala-inexistente" nao esta entre as alternativas); continua aguardando
+[a2a] recv method=SendMessage id=314573 traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 trace=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01 retomando (accept sala-mirante)
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=GetTask id=641667 traceparent=-
+[a2a] recv method=SendMessage id=449262 traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-fd87106c20f77f19-01
+[a2a] recv method=SendMessage id=592346 traceparent=00-99e37ea430c329e3a776a03de60f4830-a6039e5e7e15efe7-01
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 trace=00-99e37ea430c329e3a776a03de60f4830-a6039e5e7e15efe7-01 executando
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 pausada (rodada 1, 1 alternativa(s))
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id=902326 traceparent=00-99e37ea430c329e3a776a03de60f4830-a6039e5e7e15efe7-01
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 trace=00-99e37ea430c329e3a776a03de60f4830-a6039e5e7e15efe7-01 retomando (decline)
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=a123c680-0a0d-4a00-a2e8-51a4a6be9420 TASK_STATE_WORKING -> TASK_STATE_CANCELED
+[a2a] recv method=SendMessage id=347925 traceparent=00-99e37ea430c329e3a776a03de60f4830-a6039e5e7e15efe7-01
+[a2a] recv method=SendMessage id=856464 traceparent=-
+[a2a] task=726881ff-5afb-49a7-89f1-39d9432dfa7d trace=- executando
+[a2a] task=726881ff-5afb-49a7-89f1-39d9432dfa7d nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=726881ff-5afb-49a7-89f1-39d9432dfa7d TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=726881ff-5afb-49a7-89f1-39d9432dfa7d falha (execucao)
+[a2a] task=726881ff-5afb-49a7-89f1-39d9432dfa7d TASK_STATE_WORKING -> TASK_STATE_FAILED
+[a2a] recv method=GetTask id=755243 traceparent=-
+[a2a] recv method=SendMessage id=706278 traceparent=-
+[a2a] task=7e3aac96-f1c7-45fe-8b53-1516bf8f517e trace=- executando
+[a2a] task=7e3aac96-f1c7-45fe-8b53-1516bf8f517e nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=7e3aac96-f1c7-45fe-8b53-1516bf8f517e TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=7e3aac96-f1c7-45fe-8b53-1516bf8f517e TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id=515998 traceparent=-
+[a2a] task=c16d9386-a606-4096-94eb-8cdc737d875b trace=- executando
+[a2a] task=c16d9386-a606-4096-94eb-8cdc737d875b nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=c16d9386-a606-4096-94eb-8cdc737d875b TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=c16d9386-a606-4096-94eb-8cdc737d875b TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id=566416 traceparent=00-841e715158bcc23ce96ae0b07da7141d-e25e3b268fa267b5-01
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b trace=00-841e715158bcc23ce96ae0b07da7141d-e25e3b268fa267b5-01 executando
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b pausada (rodada 1, 2 alternativa(s))
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id=926494 traceparent=00-09a5197b92e5e8a12710fa2a0723fee9-2a277b08d291f902-01
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 trace=00-09a5197b92e5e8a12710fa2a0723fee9-2a277b08d291f902-01 executando
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 nenhum -> TASK_STATE_SUBMITTED
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 TASK_STATE_SUBMITTED -> TASK_STATE_WORKING
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 pausada (rodada 1, 2 alternativa(s))
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED
+[a2a] recv method=SendMessage id=814500 traceparent=00-09a5197b92e5e8a12710fa2a0723fee9-2a277b08d291f902-01
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 trace=00-09a5197b92e5e8a12710fa2a0723fee9-2a277b08d291f902-01 retomando (accept sala-mirante)
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=c33354bf-2b5b-49c9-9733-c6d9c1f7d1c1 TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=SendMessage id=401148 traceparent=00-841e715158bcc23ce96ae0b07da7141d-e25e3b268fa267b5-01
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b trace=00-841e715158bcc23ce96ae0b07da7141d-e25e3b268fa267b5-01 retomando (accept sala-fusca)
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING
+[a2a] task=a5cad312-cac8-4c53-b7a6-c796ff472f7b TASK_STATE_WORKING -> TASK_STATE_COMPLETED
+[a2a] recv method=GetTask id=754311 traceparent=-
+[a2a] recv method=GetTask id=977141 traceparent=-
