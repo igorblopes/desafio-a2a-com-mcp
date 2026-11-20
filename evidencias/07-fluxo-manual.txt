@@ -1,0 +1,87 @@
+$ python evidencias/roteiro_p13.py manual --log-mcp <stderr do MCP> --estado <arquivo temporario em %TEMP%>
+== T6 Agent Card x exemplos/wire/07
+PASS C1 HTTP 200 em /.well-known/agent-card.json  [200]
+PASS C2 campo name igual ao exemplo 07  ["Central de Salas"]
+PASS C2 campo description igual ao exemplo 07  ["Reserva salas de reuniao da Hill Valley Tech."]
+PASS C2 campo provider igual ao exemplo 07  [{"organization": "Hill Valley Tech", "url": "https://hillvalley.example"}]
+PASS C2 campo version igual ao exemplo 07  ["1.0.0"]
+PASS C2 campo capabilities igual ao exemplo 07  [{"streaming": false, "pushNotifications": false, "extendedAgentCard": false}]
+PASS C2 campo defaultInputModes igual ao exemplo 07  [["text/plain"]]
+PASS C2 campo defaultOutputModes igual ao exemplo 07  [["text/plain"]]
+PASS C2 campo skills igual ao exemplo 07  [[{"id": "reservar-sala", "name": "Reservar sala", "description": "Reserva uma sala em um i]
+PASS C3 interface JSONRPC 1.0 com url terminando em /a2a  [[{"url": "http://localhost:7300/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]]
+PASS C4 so os campos do exemplo (nenhum campo extra)  [[]]
+== T8 Pausa: pedido oficial de conflito (envelope do exemplo 08)
+PASS P1 HTTP 200 e id JSON-RPC devolvido igual  [id=480118]
+PASS P2 Task com id e contextId  [task=73b231f6-1453-4dd2-952f-9df8d4e57ae7 context=716930f8-3dab-4ae7-851f-8a9918e74f48]
+PASS P3 estado TASK_STATE_INPUT_REQUIRED  [TASK_STATE_INPUT_REQUIRED]
+PASS P4 mensagem exata  [alternativas: sala-fusca, sala-mirante]
+PASS P5 sem artifact  [None]
+== T11 Escolha invalida
+PASS I1 continua TASK_STATE_INPUT_REQUIRED  [TASK_STATE_INPUT_REQUIRED]
+PASS I2 mesma lista, mesma ordem  [alternativas: sala-fusca, sala-mirante]
+PASS I3 mesmo id e contextId
+PASS I4 nenhum request MCP novo  [4 -> 4]
+== T9 Continuacao escolha=sala-mirante (envelope do exemplo 10)
+PASS K1 TASK_STATE_COMPLETED  [Reserva res-0003 confirmada na sala-mirante.]
+PASS K2 artifact reserva com os 6 campos  [{"reserva": "res-0003", "sala": "sala-mirante", "inicio": "2026-11-03T14:00:00-03:00", "fim": "2026-11-03T15:00:00-03:00", "responsavel": "Marty", "politica": "2026-11-01"}]
+PASS K3 reserva na sala-mirante, intervalo e responsavel originais
+PASS K4 politica = versao lida de politica://uso (2026-11-01)  [2026-11-01]
+PASS K5 no log: tools/list antes do 1o tools/call desta Task
+PASS K6 no log: pausa e retry com o mesmo trace-id e ids JSON-RPC diferentes  [['3', '4']]
+   [mcp] recv method=tools/list id=0 name=- traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-a4f02f2c5195db61-01
+   [mcp] recv method=tools/list id=1 name=- traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-06cb1601d3535488-01
+   [mcp] recv method=resources/read id=2 name=politica://uso traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-940927143678f93b-01
+   [mcp] recv method=tools/call id=3 name=reservar_sala traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-9921f4841cff47b7-01
+   [mcp] recv method=tools/call id=4 name=reservar_sala traceparent=00-227a3770727d52983ac4b4c1e33cbc4f-0d31fd59a2cd35bf-01
+PASS K7 GetTask: id JSON-RPC, id e contextId preservados, COMPLETED
+PASS K8 GetTask: historico [pedido, pausa, invalida, pausa, escolha, conclusao]  [['ROLE_USER', 'ROLE_AGENT', 'ROLE_USER', 'ROLE_AGENT', 'ROLE_USER', 'ROLE_AGENT']]
+PASS K9 GetTask: mesmo artifact
+PASS K10 Task concluida nao e retomada (-32004)  [{'code': -32004, 'message': 'Task 73b231f6-1453-4dd2-952f-9df8d4e57ae7 is in a terminal state (3) and cannot be modified.', 'data': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'reason': 'UNSUPPORTED_OPERATION', 'domain': 'a2a-protocol.org'}]}]
+== T10 Recusa
+PASS R1 nova Task pausada (a mirante ja esta ocupada: so sobra a fusca)  [alternativas: sala-fusca]
+PASS R2 TASK_STATE_CANCELED, sem artifact  [Reserva recusada: nenhuma sala foi reservada.]
+PASS R3 recusa nao e erro de execucao  [Reserva recusada: nenhuma sala foi reservada.]
+PASS R4 Task cancelada nao e retomada (-32004)
+PASS R5 nenhuma reserva criada: sala-fusca 14-15 continua livre
+PASS R6 no log: decline foi um tools/call com id novo no mesmo trace
+== T12 Erro de dominio propagado
+PASS D1 TASK_STATE_FAILED com a mensagem exata da tool  [Sala inexistente: sala-inexistente]
+PASS D2 a mensagem esta no historico (GetTask)  [['reservar sala=sala-inexistente inicio=2026-11-03T10:00:00-03:00 fim=2026-11-03T11:00:00-03:00 responsavel=Marty', 'Sala inexistente: sala-inexistente']]
+PASS D3 direto no MCP: isError true, mesma mensagem, HTTP 200  [http=200]
+== T15 Capability ausente
+PASS E1 exemplo 06 (clientCapabilities {}): HTTP 400, -32021, data.requiredCapabilities  [http=400 code=-32021 data={'requiredCapabilities': {'elicitation': {'form': {}}}}]
+PASS E2 sem o campo clientCapabilities: HTTP 400, -32602  [http=400 code=-32602 msg='Invalid _meta envelope for protocol revision 2026-07-28: io.modelcontextprotocol/clientCapabilities: missing']
+== T14 Restart, fase 1: guardar um requestState valido (exemplo 03)
+PASS Z1 estado e chave guardados fora do repositorio (nao impressos)  [requestState de 397 caracteres, prefixo 'v1.', chave 'escolha_de_sala', alternativas ['sala-fusca']]
+== T13 requestState adulterado (depois de T15 e T14: S5 ocupa a ultima alternativa das 14h)
+PASS S1 exemplo 03: input_required com requestState  [requestState de 399 caracteres, prefixo 'v1.', chave 'escolha_de_sala']
+PASS S2 um caractere trocado: erro JSON-RPC -32602  [http=200 code=-32602 msg='Invalid or expired requestState']
+PASS S3 a resposta nao ecoa o estado nem o segredo
+PASS S4 nenhuma reserva criada pelo retry adulterado (fusca 14-15 livre)
+PASS S5 argumentos adulterados com estado valido: vale o pedido selado  [{"reserva": "res-0004", "reservado": true, "sala": "sala-fusca", "inicio": "2026-11-03T14:00:00-03:00", "fim": "2026-11-03T15:00:00-03:00", "responsavel": "Mart]
+   (S5 reservou a sala-fusca 14-15 para Marty, que e o efeito correto do estado valido)
+== T16 Duas Tasks pausadas, retomadas em ordem inversa (dia 04/11)
+PASS X1 Task A pausada  [alternativas: sala-fusca, sala-mirante]
+PASS X2 Task B pausada  [alternativas: sala-fusca, sala-mirante]
+PASS X3 Tasks e contextos diferentes
+PASS X4 B (retomada primeiro): mirante, Bob, 10-11  [{"reserva": "res-0007", "sala": "sala-mirante", "inicio": "2026-11-04T10:00:00-03:00", "fim": "2026-11-04T11:00:00-03:00", "responsavel": "Bob", "politica": "2026-11-01"}]
+PASS X5 A (retomada depois): fusca, Alice, 10-11  [{"reserva": "res-0008", "sala": "sala-fusca", "inicio": "2026-11-04T10:00:00-03:00", "fim": "2026-11-04T11:00:00-03:00", "responsavel": "Alice", "politica": "2026-11-01"}]
+PASS X6 reservas diferentes
+PASS X7 historicos isolados (nenhum cita o responsavel do outro)
+PASS X8 no log: cada Task no seu trace, 2 tools/call cada, nenhum id compartilhado  [A=['20', '25'] B=['23', '24']]
+== T17 Vazamento nas superficies publicas do A2A
+PASS V 'requestState' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V 'inputRequests' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V 'inputResponses' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V 'escolha_de_sala' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V 'continuacao' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V 'REQUEST_STATE_SECRET' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V '7301' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V '"v1.' nao aparece em card, SendMessage, continuacoes, GetTask, historico e artifacts
+PASS V o valor do segredo nao aparece em nenhuma resposta publica  [segredo lido de servidor-mcp/.env so para comparar]
+   (19 respostas publicas inspecionadas)
+
+resumo: 0 falha(s)
+
+exit=0

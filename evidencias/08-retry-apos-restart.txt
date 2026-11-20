@@ -1,0 +1,10 @@
+$ python evidencias/roteiro_p13.py restart --estado <arquivo temporario em %TEMP%>
+== T14 Restart, fase 2: retry com o estado emitido ANTES do restart
+PASS Z2 resultType complete  [http=200 resultType=complete erro=None]
+PASS Z3 reserva concluida com o pedido reconstruido do estado (garagem->fusca, 14-15, Doc)  [{"reserva": "res-0003", "reservado": true, "sala": "sala-fusca", "inicio": "2026-11-03T14:00:00-03:00", "fim": "2026-11-03T15:00:00-03:00", "responsavel": "Doc", "politica": "2026-11-01", "motivo": nu]
+   Nota: a agenda em memoria recomecou de dados/ no restart; o que sobreviveu foi a capacidade de validar e interpretar o requestState.
+   arquivo de estado temporario apagado
+
+resumo: 0 falha(s)
+
+exit=0

@@ -1,0 +1,234 @@
+# Passo 13 - agente
+$ npm run check
+
+> agente@1.0.0 check
+> tsc --noEmit
+
+
+exit=0 (check)
+
+$ npm test
+
+> agente@1.0.0 test
+> node --import tsx --test test/*.test.ts
+
+▶ máquina de estados
+  ✔ caminhos permitidos (0.5335ms)
+  ✔ caminhos proibidos (0.4498ms)
+  ✔ terminais: COMPLETED, FAILED, CANCELED (0.4625ms)
+✔ máquina de estados (2.2033ms)
+▶ repositório de Tasks
+  ✔ grava, lê cópias e registra só mudanças de estado (0.4396ms)
+  ✔ Task terminal não volta a executar; Task nova não nasce no meio (0.3189ms)
+  ✔ Tasks independentes (0.2085ms)
+✔ repositório de Tasks (1.2132ms)
+▶ parser do pedido
+  ✔ formato do contrato (0.3769ms)
+  ✔ responsável com espaços e campos em outra ordem (0.1385ms)
+  ✔ não valida domínio: sala inexistente e horário estranho passam (o MCP decide) (0.1292ms)
+  ✔ erros de formato (0.2172ms)
+✔ parser do pedido (1.1109ms)
+▶ Agent Card e configuração
+  ✔ card igual ao exemplo oficial (exemplos/wire/07), trocando só a URL (6.5637ms)
+  ✔ padrões e variáveis de ambiente (0.3765ms)
+✔ Agent Card e configuração (7.088ms)
+▶ ponte: pergunta tirada do formulário do servidor
+  ✔ enum: chave real, campo sala, ordem do servidor e mensagem exata (0.4257ms)
+  ✔ const (uma alternativa só) também vale (0.1216ms)
+  ✔ formulários que a ponte não sabe responder (0.1719ms)
+  ✔ mensagem é estável (mesma lista → mesmo texto) (0.0665ms)
+✔ ponte: pergunta tirada do formulário do servidor (0.9074ms)
+▶ ponte: escolha do cliente
+  ✔ escolha válida vira accept no campo do formulário (0.1858ms)
+  ✔ escolha=recusar vira decline (0.0941ms)
+  ✔ fora da lista ou fora do formato: inválida (0.0707ms)
+✔ ponte: escolha do cliente (0.4459ms)
+▶ continuações pendentes por Task
+  ✔ uma entrada por taskId, sem mistura; tomar consome (0.2298ms)
+  ✔ não vaza por JSON nem por quem a recebeu (0.1497ms)
+✔ continuações pendentes por Task (0.4563ms)
+▶ Agent Card
+  ✔ GET /.well-known/agent-card.json: 200, JSON, v1.0, JSON-RPC em /a2a, skill reservar-sala (32.4815ms)
+  ✔ opacidade: o card não cita MCP, tools, requestState nem a porta 7301 (1.9429ms)
+✔ Agent Card (793.1155ms)
+▶ JSON-RPC
+  ✔ id preservado (string e número) e distinto do id da Task (94.321ms)
+  ✔ método desconhecido → -32601 (1.296ms)
+  ✔ request inválido → -32600; JSON quebrado → -32700 (3.9489ms)
+  ✔ params inválidos → -32602 (2.1641ms)
+  ✔ métodos fora do escopo são recusados (-32004) (1.8776ms)
+✔ JSON-RPC (103.9013ms)
+▶ SendMessage e GetTask: caminho feliz
+  ✔ sala livre: COMPLETED, ids próprios, histórico e artifact reserva com dados do MCP (10.1522ms)
+  ✔ cada SendMessage sem taskId cria Task e contextId novos (12.7311ms)
+  ✔ Task inexistente → -32001 (0.9083ms)
+✔ SendMessage e GetTask: caminho feliz (24.0351ms)
+▶ falhas
+  ✔ isError do MCP → FAILED com a mensagem original no status e no histórico (5.4911ms)
+  ✔ regra de domínio é do MCP: horário fora da janela vem com a mensagem do servidor (4.6037ms)
+  ✔ texto fora do formato → FAILED sem nenhum request MCP (1.0745ms)
+✔ falhas (11.3166ms)
+▶ ponte: pausa (input_required → INPUT_REQUIRED)
+  ✔ conflito do contrato: Task pausada com "alternativas: sala-fusca, sala-mirante", sem artifact e sem requestState (11.8163ms)
+  ✔ continuação com OUTRO traceparent no header: o retry continua no trace-id da Task (11.5847ms)
+  ✔ o mesmo pedido produz a mesma pausa (determinismo) (13.6617ms)
+✔ ponte: pausa (input_required → INPUT_REQUIRED) (37.2264ms)
+▶ ponte: retomada (SendMessage com taskId)
+  ✔ escolha inválida: continua pausada, mesma mensagem, nenhum tools/call; depois a válida conclui (13.5274ms)
+  ✔ recusa: decline → CANCELED, sem artifact, e a Task não aceita mais nada (11.4881ms)
+  ✔ Task concluída pela retomada não volta: nova escolha → -32004, nada muda (12.462ms)
+  ✔ duas escolhas simultâneas na mesma Task: só uma retoma, a outra é recusada (10.0795ms)
+  ✔ duas Tasks pausadas, retomadas em ordem inversa: cada uma com a sua reserva (20.7922ms)
+  ✔ texto de escolha sem taskId é um pedido novo, mal formado: FAILED, nada é retomado (0.8297ms)
+✔ ponte: retomada (SendMessage com taskId) (69.6235ms)
+▶ Task terminal
+  ✔ SendMessage com taskId de Task concluída é recusado e nada muda (5.4633ms)
+  ✔ o mesmo vale para Task em FAILED (4.6934ms)
+✔ Task terminal (10.2585ms)
+▶ traceparent
+  ✔ o trace-id do header chega a todos os requests MCP da Task (stderr do MCP) (4.1842ms)
+  ✔ sem header (ou com header inválido), nenhum traceparent é inventado (3.8458ms)
+✔ traceparent (8.1275ms)
+▶ isolamento entre Tasks
+  ✔ duas Tasks simultâneas: ids, contexto, histórico e artifact de cada uma (5.9167ms)
+✔ isolamento entre Tasks (5.995ms)
+▶ MCP indisponível
+  ✔ o agente sobe sem o MCP, responde o card, falha a Task sem cair e reconecta quando o MCP volta (692.0505ms)
+✔ MCP indisponível (692.1788ms)
+▶ ponte: falhas na retomada
+  ✔ MCP fora do ar no retry → FAILED sem reserva; requestState rejeitado (segredo trocado) → FAILED "continuação recusada" (937.1229ms)
+✔ ponte: falhas na retomada (937.2554ms)
+▶ Passo 12: entradas fora do contrato e GetTask sem efeito colateral
+  ✔ mensagem com role ROLE_AGENT ou sem role → -32602, nenhuma Task, nenhum request MCP (2.0155ms)
+  ✔ continuação com contextId de outra conversa → -32602; a Task segue pausada e a continuação certa conclui (13.6924ms)
+  ✔ GetTask em Task pausada e em Task cancelada: estado certo, histórico completo e nenhum request MCP (19.6661ms)
+✔ Passo 12: entradas fora do contrato e GetTask sem efeito colateral (35.5177ms)
+▶ descoberta
+  ✔ no log do MCP, tools/list vem antes do primeiro tools/call (0.0738ms)
+✔ descoberta (0.1224ms)
+▶ cliente MCP (protocolo)
+  ✔ conectar faz só o server/discover, com pin 2026-07-28 (0.6387ms)
+  ✔ listarTools vai ao fio toda vez (sem cache) (13.7736ms)
+  ✔ chamarTool envia sem conferir catálogo (isso é do Host) e classifica o resultado (9.3051ms)
+  ✔ retry: inputResponses e requestState em params, fora de arguments, com id novo (11.9978ms)
+  ✔ servidor fora do ar no connect → ErroMcp transporte (3.6654ms)
+✔ cliente MCP (protocolo) (439.2839ms)
+▶ configuração do timeout
+  ✔ MCP_TIMEOUT_MS: padrão 20 s, aceita 1000..120000, recusa o resto (0.8145ms)
+✔ configuração do timeout (315.208ms)
+▶ falhas no tools/call: nada vira COMPLETED sem confirmação do MCP
+  ✔ html500 → falhou (90.5545ms)
+  ✔ nao-json → falhou (13.5114ms)
+  ✔ nao-jsonrpc → falhou (12.5794ms)
+  ✔ outro-id → falhou (1511.0803ms)
+  ✔ incompleto → falhou (10.1769ms)
+  ✔ silencio → falhou (1516.8191ms)
+  ✔ o log de cada falha é uma linha curta, sem o corpo inteiro do erro (0.1665ms)
+  ✔ depois das falhas, o mesmo serviço volta a reservar normalmente (14.0001ms)
+✔ falhas no tools/call: nada vira COMPLETED sem confirmação do MCP (3169.3927ms)
+▶ agente A2A real atrás do proxy de falhas
+  ✔ silêncio no tools/call: Task FAILED com mensagem honesta em ~1,5 s, agente no ar, GetTask estável (1573.0319ms)
+  ✔ resultado incompleto: FAILED, nunca COMPLETED com artifact pela metade (12.5139ms)
+  ✔ silêncio no RETRY: a Task pausada termina FAILED, sem reenvio automático e sem nova retomada (1520.2187ms)
+  ✔ o agente continua atendendo depois de todas as falhas (12.3904ms)
+✔ agente A2A real atrás do proxy de falhas (3491.3169ms)
+▶ inicialização e descoberta
+  ✔ iniciar faz server/discover e tools/list, nessa ordem, antes de qualquer tools/call (0.9114ms)
+  ✔ catálogo com as três tools e os schemas recebidos (0.2361ms)
+  ✔ descobrir() de novo vai ao fio e substitui o catálogo (4.6988ms)
+  ✔ tool fora do catálogo ou sem argumento obrigatório: ErroDeUso, nada no fio (0.6722ms)
+  ✔ log do servidor: tools/list antes do primeiro tools/call (6.7195ms)
+✔ inicialização e descoberta (422.3222ms)
+▶ política (resource)
+  ✔ lida por MCP, versão da 1ª linha, texto intacto e origem registrada (3.8475ms)
+  ✔ a versão vem do servidor (outra política, em CRLF → outra versão) (262.874ms)
+  ✔ URI não anunciada → ErroMcp jsonrpc -32602 (3.2472ms)
+✔ política (resource) (270.2166ms)
+▶ execução: tipos de resultado
+  ✔ completo: reserva simples com os dados do pedido e a operação carimbada (5.1076ms)
+  ✔ erro_execucao: sala inexistente, com a mensagem da tool (2.8424ms)
+  ✔ erro_protocolo: requestState adulterado → -32602, sem reserva e sem o estado na mensagem (9.4189ms)
+  ✔ falha_transporte: servidor cai depois da inicialização (241.8524ms)
+  ✔ servidor fora do ar na inicialização → ErroMcp transporte (1.7588ms)
+  ✔ Host encerrado não executa nada (3.4026ms)
+✔ execução: tipos de resultado (264.658ms)
+▶ MRTR: interrupção e continuação
+  ✔ input_required vira continuação com tudo para o retry (e nada é reservado) (4.6287ms)
+  ✔ aceitar: retry com id novo, mesma chave, requestState idêntico, fora de arguments (5.014ms)
+  ✔ recusar: complete, reservado false, nenhuma reserva (6.4571ms)
+  ✔ cancelar: complete, reservado false, nenhuma reserva (4.976ms)
+  ✔ resposta inválida para o formulário: resposta_invalida, nada no fio, continuação segue válida (3.8903ms)
+  ✔ a continuação sobrevive a JSON (como num armazenamento de Task) e a outro Host (6.3454ms)
+  ✔ retomar com outra operação é recusado sem enviar nada (2.5328ms)
+  ✔ sala escolhida ocupada nesse meio tempo → nova pausa, rodada 2 (5.4375ms)
+✔ MRTR: interrupção e continuação (39.5448ms)
+▶ isolamento entre operações
+  ✔ duas operações pausadas, retomadas em ordem inversa, sem trocar estado (8.2538ms)
+  ✔ operações simultâneas (Promise.all) no mesmo Host (10.0862ms)
+✔ isolamento entre operações (18.4666ms)
+▶ trace context
+  ✔ mesmo trace-id em tools/list, resources/read, tools/call e retry; um span por request; no log do servidor (6.1669ms)
+  ✔ sem traceparent, nenhum é inventado (nem no retry) (4.0808ms)
+✔ trace context (10.3631ms)
+▶ reinício e ausência de sessão
+  ✔ reiniciar(): novo cliente, novo server/discover e tools/list, catálogo de volta (5.9927ms)
+  ✔ servidor reiniciado na mesma porta: o Host segue sem reconectar e a continuação anterior ainda vale (487.1408ms)
+✔ reinício e ausência de sessão (493.2829ms)
+▶ protocolo em todo o tráfego do Host
+  ✔ ids JSON-RPC distintos (0.117ms)
+  ✔ todo request leva _meta com protocolVersion e elicitation.form (0.2204ms)
+  ✔ headers espelham o corpo (0.0851ms)
+✔ protocolo em todo o tráfego do Host (0.5177ms)
+▶ pausa
+  ✔ input_required vira "pausada" com a pergunta do formulário e o requestState guardado, sem resposta automática (102.633ms)
+✔ pausa (428.173ms)
+▶ retomada
+  ✔ accept: retry com id novo, argumentos originais, chave original e requestState byte a byte (16.2843ms)
+  ✔ decline: { action: decline } e desfecho "recusada", sem reserva (9.8412ms)
+  ✔ duas pausas ao mesmo tempo: cada retry leva o próprio requestState e os próprios argumentos (17.9087ms)
+✔ retomada (44.286ms)
+▶ config
+  ✔ MCP_URL ausente usa o padrão (0.7987ms)
+  ✔ MCP_URL definida é usada (0.0811ms)
+  ✔ MCP_URL inválida falha cedo (0.2364ms)
+✔ config (1.7808ms)
+▶ traceparent
+  ✔ decompõe um valor válido (0.886ms)
+  ✔ recusa formatos inválidos (0.1097ms)
+  ✔ o filho preserva trace-id e flags e troca o span (1.3859ms)
+  ✔ filho de valor inválido lança, em vez de inventar (0.0965ms)
+✔ traceparent (2.655ms)
+▶ versão da política
+  ✔ LF (0.1631ms)
+  ✔ CRLF (0.0818ms)
+  ✔ sem a linha (0.0925ms)
+✔ versão da política (0.4748ms)
+▶ MRTR (unidade)
+  ✔ lê chave, método, modo, schema e opções sem presumir a chave (0.1473ms)
+  ✔ valida o conteúdo contra o schema recebido (0.319ms)
+  ✔ inputResponses usa a mesma chave recebida (0.2259ms)
+  ✔ chave faltando, sobrando, action desconhecida ou content ausente são problemas (0.1462ms)
+  ✔ pedido que não é form (ex.: url) não é respondido com accept (0.0808ms)
+  ✔ classificar separa input_required, isError e complete, guardando o bruto (0.1379ms)
+✔ MRTR (unidade) (1.2228ms)
+▶ erros
+  ✔ ProtocolError vira jsonrpc com code e data (0.2103ms)
+  ✔ timeout e conexão fechada viram transporte (0.1053ms)
+  ✔ fetch failed vira transporte (0.0786ms)
+✔ erros (0.4918ms)
+▶ Host (unidade)
+  ✔ catálogo: nada executa antes da descoberta; depois exige tool conhecida e required (0.849ms)
+  ✔ catálogo devolve cópias: quem lê não altera o schema guardado (1.3355ms)
+  ✔ continuação é cópia congelada, serializável e sem vínculo com quem a criou (1.2053ms)
+  ✔ resumir() não expõe o requestState (0.1621ms)
+✔ Host (unidade) (3.6827ms)
+ℹ tests 130
+ℹ suites 40
+ℹ pass 130
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7376.7905
+
+exit=0 (test)

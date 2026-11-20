@@ -1,6 +1,6 @@
 # Arquitetura: A Ponte (agente A2A com MCP por dentro)
 
-> Documento de referência dos passos de implementação. Ele **não** substitui os contratos oficiais: `README.md` do enunciado, `exemplos/wire/` e `validador/validar.py` prevalecem em qualquer divergência. Tudo o que está aqui é **planejado**. Na data deste documento (Passo 2, 07/11/2026), `servidor-mcp/` e `agente/` contêm apenas `.gitkeep`.
+> Documento de referência dos passos de implementação. Ele **não** substitui os contratos oficiais: `README.md` do enunciado, `exemplos/wire/` e `validador/validar.py` prevalecem em qualquer divergência. As seções 1 a 16 nasceram como **plano** no Passo 2 (07/11/2026) e foram corrigidas onde a implementação divergiu (revisão do Passo 13, 20/11/2026). O que foi feito em cada passo está na seção 17, e a evidência de conformidade (validador 36/36, fluxo manual, auditoria dos arquivos protegidos) está em `RELATORIO-CONFORMIDADE.md` e `evidencias/`.
 
 ---
 
@@ -88,7 +88,7 @@ flowchart LR
     subgraph AG["Processo B: agente :7300"]
         direction TB
         HTTP_A["main.ts<br/>express: GET card, POST /a2a<br/>middleware A2A-Version e traceparent"]
-        SDK_A["@a2a-js/sdk<br/>DefaultRequestHandler<br/>+ InMemoryTaskStore"]
+        SDK_A["@a2a-js/sdk<br/>DefaultRequestHandler<br/>+ RepositorioDeTasks (TaskStore próprio)"]
         EXE["executor.ts<br/>AgentExecutor: publica eventos da Task"]
         PONTE["ponte.ts<br/>traduz resultType em TaskState"]
         RET[("retomadas.ts<br/>Map taskId → requestState,<br/>chave, enum, args")]
@@ -265,7 +265,7 @@ São gerados pelo SDK cliente, monotônicos por instância (`0, 1, 2, 3…`). Co
 
 ### 7.1 Estrutura
 
-O que é público (serializado em `SendMessage`/`GetTask`) é gerido pelo `InMemoryTaskStore` do SDK:
+O que é público (serializado em `SendMessage`/`GetTask`) é gerido pelo `RepositorioDeTasks` (`tarefas/repositorio.ts`), um `TaskStore` próprio que impõe a máquina de estados de `tarefas/estados.ts`:
 
 ```ts
 Task {
@@ -316,7 +316,7 @@ Um ajuste em relação ao seu rascunho: a recusa também passa por `WORKING`, po
 
 1. **Quem cria a Task?** O `DefaultRequestHandler` do SDK A2A, ao receber `SendMessage` sem `taskId`. Nosso executor publica o evento `task` inicial (`SUBMITTED`, com a mensagem do usuário no `history`).
 2. **Identidade?** `id` e `contextId` são UUIDs gerados pelo SDK. Os exemplos usam `task-xxxx`, mas o validador não exige formato.
-3. **Onde fica o estado?** Em memória, no `InMemoryTaskStore` (público) e no `Map` de `retomadas.ts` (privado). Nenhum dos dois sobrevive a restart do **agente**, e o enunciado não exige isso. Só o restart do **MCP** precisa ser suportado, e lá o estado viaja no `requestState`.
+3. **Onde fica o estado?** Em memória, no `RepositorioDeTasks` (público) e no `Map` de `retomadas.ts` (privado). Nenhum dos dois sobrevive a restart do **agente**, e o enunciado não exige isso. Só o restart do **MCP** precisa ser suportado, e lá o estado viaja no `requestState`.
 4. **`GetTask`?** O SDK lê o TaskStore e devolve o snapshot. O executor não participa.
 5. **Retomada?** `SendMessage` com `message.taskId`: o SDK encontra a Task e chama o executor com `requestContext.task` preenchido em `INPUT_REQUIRED`. O executor pede à ponte `retomar(taskId, texto)`.
 6. **Terminal?** O próprio SDK rejeita (`-32004 UNSUPPORTED_OPERATION`, testado), o que cobre a verificação 31. Como defesa extra, a ponte apaga a `ContextoRetomada` ao chegar a um estado terminal, então não há o que retomar.
@@ -502,10 +502,10 @@ Formato W3C: `00-<trace-id 32 hex>-<parent/span-id 16 hex>-<flags 2 hex>`.
 
 1. Um middleware express no agente lê o header `traceparent` e valida o formato. Se for válido, guarda `{traceId, flags}` num `AsyncLocalStorage` durante o request.
 2. Em cada request MCP, `mcp/cliente.ts` monta `00-<mesmo traceId>-<span novo aleatório>-<flags>` e o coloca em `_meta.traceparent`.
-3. Se o header **não** vier (as verificações 29, 32, 33 e 36 não mandam), usa-se o `traceId` guardado na `ContextoRetomada` da Task. Se for Task nova sem header, gera-se um trace-id novo para a Task inteira.
+3. Se o header **não** vier (as verificações 29, 32, 33 e 36 não mandam), usa-se o `traceId` guardado na `ContextoRetomada` da Task. Se for Task nova sem header, os requests MCP vão **sem** `traceparent`: o agente nunca inventa um trace (`trace.ts`).
 4. O servidor MCP loga o `traceparent` de `_meta`.
 
-Formato de log planejado (uma linha por evento, stderr):
+Formato de log (uma linha por evento, stderr):
 
 ```
 [mcp] recv method=tools/call id=4 name=reservar_sala traceparent=00-4bf9…-a1b2…-01
@@ -557,13 +557,14 @@ Testes usam o `node:test` nativo do Node (executado via `node --import tsx --tes
 
 A opção por `tsx` em vez de `tsc` + `dist/` é pela simplicidade: um comando só, sem etapa de build, e com stack traces apontando para o `.ts`. A checagem de tipos fica em um script `check` separado.
 
-### 12.3 Subida a partir de um clone limpo (planejado)
+### 12.3 Subida a partir de um clone limpo
 
 ```powershell
 # Terminal 1: servidor MCP
 cd servidor-mcp
 npm ci
-$env:REQUEST_STATE_SECRET = python -c "import secrets; print(secrets.token_hex(32))"
+# o segredo vem de servidor-mcp/.env (gitignored; npm start usa --env-file-if-exists=.env)
+# ou do ambiente: $env:REQUEST_STATE_SECRET = python -c "import secrets; print(secrets.token_hex(32))"
 npm start                     # escuta em :7301, logs no stderr
 
 # Terminal 2: agente
@@ -586,12 +587,12 @@ O equivalente em bash usa `export REQUEST_STATE_SECRET=...`. A ordem de subida n
 | D1 | TypeScript nos dois processos | MRTR explícito no SDK; tipagem; sua preferência; wire testado | Python (`mcp` 2.3.0) | Exige instalar Node; diferenças cosméticas com os exemplos |
 | D2 | `createMcpHandler` + `responseMode: 'json'` + `legacy: 'reject'` | O validador só lê JSON; só servimos a revisão 2026-07-28 | `auto` (pode virar SSE); `stateless` legacy | Notificações no meio da chamada são descartadas (não usamos) |
 | D3 | `node:http` puro no MCP, com log na borda | Logar **todo** request, inclusive os rejeitados; sem dependência extra | `@modelcontextprotocol/node` (`toNodeHandler`) | ~20 linhas de adaptação Request/Response nossas |
-| D4 | `createRequestStateCodec` do SDK (HMAC, TTL 600 s) | Utilitário oficial; adulteração → `-32602` automático | HMAC manual; AES-GCM | Payload legível (permitido pelo enunciado) |
+| D4 | `createRequestStateCodec` do SDK (HMAC, TTL 900 s, configurável entre 300 e 1800) | Utilitário oficial; adulteração → `-32602` automático | HMAC manual; AES-GCM | Payload legível (permitido pelo enunciado) |
 | D5 | Selo contém args + alternativas; o retry ignora `arguments` | Verificação 18; alternativas para validar a escolha | Rejeitar se os args divergirem | Menos mensagens de erro, mais robusto |
 | D6 | Agenda como singleton de módulo | A factory do McpServer é por request | Estado dentro da factory | Precisa de cuidado com import/ciclo de vida |
 | D7 | Cliente MCP do SDK em modo manual | Ver o `input_required` cru (a Task precisa pausar) | `fetch` à mão; auto-fulfill | Depende de API nova (`allowInputRequired`) |
 | D8 | `tools/list` + `resources/read` a cada Task | Log claro por trace; resiliente a restart do MCP | Uma vez no boot | 2 requests extras por Task (irrelevante) |
-| D9 | `@a2a-js/sdk` com `DefaultRequestHandler` + `InMemoryTaskStore` | Máquina de estados, histórico, `GetTask` e rejeição de terminal prontos e conformes à v1.0 | JSON-RPC A2A à mão | Precisa do middleware `A2A-Version`; menos controle byte a byte do JSON |
+| D9 | `@a2a-js/sdk` com `DefaultRequestHandler` + `TaskStore` próprio (`RepositorioDeTasks`) | Máquina de estados, histórico, `GetTask` e rejeição de terminal prontos e conformes à v1.0 | JSON-RPC A2A à mão | Precisa do middleware `A2A-Version`; menos controle byte a byte do JSON |
 | D10 | Contexto de retomada fora do TaskStore | O TaskStore é serializado → evitaria vazar o `requestState` (verificação 34) | `task.metadata` | Dois lugares de estado por Task, ligados por `taskId` |
 | D11 | Agente valida a escolha contra o `enum` antes de chamar o MCP | Verificação 29 (manter pausa sem efeitos); é validação de schema, não regra de sala | Mandar ao MCP e deixar falhar | O MCP também revalida (defesa em profundidade) |
 | D12 | `tsx` para executar, sem build | Menos peças; README curto | `tsc` → `dist/` | Startup um pouco mais lento |
@@ -611,7 +612,7 @@ O equivalente em bash usa `export REQUEST_STATE_SECRET=...`. A ordem de subida n
 | R6 | MCP fora do ar durante uma Task | A Task vai para `FAILED` com mensagem clara; não é exigido |
 | R7 | Windows: `localhost` resolvendo `::1` vs `127.0.0.1` | `listen()` sem host (dual-stack) nos dois processos |
 | R8 | Validador rodado duas vezes sem reiniciar → falsos negativos | Documentar no README; reiniciar sempre |
-| R9 | Git fora do PATH e Node ausente no PC | Pendências de ambiente (seção 16) |
+| R9 | Git fora do PATH e Node ausente no PC | Resolvido: Node v26.13.0, npm 11.20.0, Git 2.55.0 (Passo 13, `evidencias/01-ambiente.txt`) |
 | R10 | `server/discover` no log pode confundir quem procura `tools/list` | Esperado: o avaliador procura `tools/list` **antes do primeiro `tools/call`**, e isso continua verdadeiro |
 
 ---
@@ -643,13 +644,13 @@ O equivalente em bash usa `export REQUEST_STATE_SECRET=...`. A ordem de subida n
 
 ---
 
-## 16. Pré-requisitos para o Passo 3
+## 16. Pré-requisitos para o Passo 3 (todos atendidos)
 
-- [ ] Instalar **Node.js LTS ≥ 22** no PC (`winget install OpenJS.NodeJS.LTS`) e conferir `node -v` / `npm -v` em um terminal novo.
-- [ ] Colocar o **Git no PATH** do usuário (`C:\Program Files\Git\cmd`).
-- [ ] (Opcional) `git remote add upstream https://github.com/devfullcycle/desafio-a2a-com-mcp.git`.
-- [ ] Gerar um `REQUEST_STATE_SECRET` local, sem commitá-lo.
-- [ ] Passo 3: `servidor-mcp/` com `package.json` travado, `main.ts` (borda HTTP + log), `config.ts`, `servidor.ts` e `listar_salas` + `politica://uso`. Meta: verificações 01–08 verdes.
+- [x] Instalar **Node.js LTS ≥ 22** no PC (`winget install OpenJS.NodeJS.LTS`) e conferir `node -v` / `npm -v` em um terminal novo.
+- [x] Colocar o **Git no PATH** do usuário (`C:\Program Files\Git\cmd`).
+- [x] (Opcional) `git remote add upstream https://github.com/devfullcycle/desafio-a2a-com-mcp.git`.
+- [x] Gerar um `REQUEST_STATE_SECRET` local, sem commitá-lo.
+- [x] Passo 3: `servidor-mcp/` com `package.json` travado, `main.ts` (borda HTTP + log), `config.ts`, `servidor.ts` e `listar_salas` + `politica://uso`. Meta: verificações 01–08 verdes.
 
 ---
 
@@ -1629,3 +1630,17 @@ cd servidor-mcp; npm test           # 149
 cd agente; npm test                 # 130 (inclui o proxy de falhas)
 python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 36/36, exit code 0
 ```
+
+### Passo 13: validação formal (20/11/2026)
+
+Nenhuma mudança de código. Validação executada no PC (Windows 11, Node v26.13.0, Python 3.15.2) sobre o commit `b3625c1`, com evidências em `evidencias/` e o relatório em `RELATORIO-CONFORMIDADE.md`.
+
+| Item | Resultado |
+|---|---|
+| `dados/`, `validador/`, `exemplos/` contra o starter (`upstream/main` = `263f17e`) | idênticos (diff vazio, 16 SHA-256 iguais) |
+| `agente` / `servidor-mcp` (`check` + `test`) | 130/130 e 149/149, exit 0 |
+| Validador oficial, processos recém-iniciados | **36/36, exit code 0** |
+| Auditoria do log MCP pelo trace-id do validador | 5/5 |
+| Roteiro manual do avaliador (`evidencias/roteiro_p13.py`) | 64/64 + 2/2 depois do restart do MCP |
+
+Revisão do documento no Passo 13: corrigidas as divergências entre o plano e o código (TaskStore próprio no lugar do `InMemoryTaskStore`, TTL de 900 s, ausência de trace inventado, subida com `.env`, pré-requisitos atendidos).

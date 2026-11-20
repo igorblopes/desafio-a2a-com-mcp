@@ -1,0 +1,20 @@
+$ python evidencias/roteiro_p13.py logs --log-mcp <stderr do MCP> --trace-id 1d9558549e0a087126d13524029f5d8e
+== Auditoria do log do MCP para o trace-id 1d9558549e0a087126d13524029f5d8e
+PASS L1 existem requests MCP com o trace-id do validador  [9 linhas]
+   [mcp] recv method=tools/call id="c80d3377b121" name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-49cd9f307d46e967-01
+   [mcp] recv method=tools/list id=0 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-f06b543ee17e90e6-01
+   [mcp] recv method=tools/list id=1 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-49389d85164e0098-01
+   [mcp] recv method=resources/read id=2 name=politica://uso traceparent=00-1d9558549e0a087126d13524029f5d8e-4c3739d109e3d33c-01
+   [mcp] recv method=tools/call id=3 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-3116e955c1fc5024-01
+   [mcp] recv method=tools/list id=4 name=- traceparent=00-1d9558549e0a087126d13524029f5d8e-16b670c5abc12b0f-01
+   [mcp] recv method=resources/read id=5 name=politica://uso traceparent=00-1d9558549e0a087126d13524029f5d8e-bd8f01ad6c6506e9-01
+   [mcp] recv method=tools/call id=6 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-0ea9f8d1c2840945-01
+   [mcp] recv method=tools/call id=7 name=reservar_sala traceparent=00-1d9558549e0a087126d13524029f5d8e-3d7664b6763b823c-01
+PASS L2 descoberta: o primeiro request do agente no trace e tools/list, antes de qualquer tools/call  [tools/list#0 -> tools/list#1 -> resources/read#2 -> tools/call#3 -> tools/list#4 -> resources/read#5 -> tools/call#6 -> tools/call#7]
+PASS L3 tools/call do agente (pedido, pausa e retry) com ids JSON-RPC todos diferentes  [ids=['3', '6', '7']]
+PASS L4 cada request do trace tem span proprio (parent-id)  [9 spans para 9 requests]
+PASS L5 toda linha recv registra metodo e id  [52 linhas recv]
+
+resumo: 0 falha(s)
+
+exit=0

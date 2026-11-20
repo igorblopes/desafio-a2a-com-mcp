@@ -1,0 +1,83 @@
+# Passo 13 - arquivos protegidos contra o starter oficial
+
+remote upstream: https://github.com/devfullcycle/desafio-a2a-com-mcp.git (adicionado neste passo; configuração local) e git fetch upstream executado
+branch padrão do upstream: main
+upstream/main = 263f17e202fd861d14aa7a5e6a539d13a62857c3
+merge-base HEAD upstream/main = 263f17e202fd861d14aa7a5e6a539d13a62857c3
+
+$ git diff --stat upstream/main -- dados validador exemplos
+(vazio = idêntico)
+
+$ git diff --stat 263f17e202fd861d14aa7a5e6a539d13a62857c3 HEAD -- dados validador exemplos
+(vazio = idêntico)
+
+$ git ls-files --others --exclude-standard -- dados validador exemplos
+(vazio = idêntico)
+
+SHA-256 (CRLF→LF): local | upstream/main | resultado
+dados/politica-de-uso.md
+  local    3eea3712ec8a8ba42c90ed5bf3092e64020775e71e96f2a44f55e3a89d68eb08
+  upstream 3eea3712ec8a8ba42c90ed5bf3092e64020775e71e96f2a44f55e3a89d68eb08
+  OK
+dados/reservas.json
+  local    1758ee5a94a3221289d27b2ce8dc5f3fff0ba70251febc8b7aefe2bf2f921236
+  upstream 1758ee5a94a3221289d27b2ce8dc5f3fff0ba70251febc8b7aefe2bf2f921236
+  OK
+dados/salas.json
+  local    9d10747ccafbc96c9dec2e7d31869b5d3dcd27d330ca61df9d90320b03b14c58
+  upstream 9d10747ccafbc96c9dec2e7d31869b5d3dcd27d330ca61df9d90320b03b14c58
+  OK
+exemplos/wire/01-tools-list.json
+  local    b194d5be8ede0f10d0c2a92aa8a2cd073042afd9736ea270cb3f4f45e4e1f79a
+  upstream b194d5be8ede0f10d0c2a92aa8a2cd073042afd9736ea270cb3f4f45e4e1f79a
+  OK
+exemplos/wire/02-tools-call-livre.json
+  local    fcd5733d44f174ddb467d323b315adbbdbb22c24b032f358591c2b72399853d9
+  upstream fcd5733d44f174ddb467d323b315adbbdbb22c24b032f358591c2b72399853d9
+  OK
+exemplos/wire/03-tools-call-conflito-input-required.json
+  local    0e130459af5864d2a4bdb6f6a717f9a81c3893a5c76d896c25e08be4d727cb90
+  upstream 0e130459af5864d2a4bdb6f6a717f9a81c3893a5c76d896c25e08be4d727cb90
+  OK
+exemplos/wire/04-tools-call-retry.json
+  local    9ef8b5131ae8c0de4aeda2bb8a53d69d60f84bd2c40e95ccab126cfe0ba09efc
+  upstream 9ef8b5131ae8c0de4aeda2bb8a53d69d60f84bd2c40e95ccab126cfe0ba09efc
+  OK
+exemplos/wire/05-resources-read-politica.json
+  local    885663eb5937dac585460a15777d93b929484be9452b274f44a2f4ddb20cb15d
+  upstream 885663eb5937dac585460a15777d93b929484be9452b274f44a2f4ddb20cb15d
+  OK
+exemplos/wire/06-erro-32021-sem-elicitation.json
+  local    893902eedcfc7878bfa5850bf732dc688973e4202b005410b220b36b8c17303f
+  upstream 893902eedcfc7878bfa5850bf732dc688973e4202b005410b220b36b8c17303f
+  OK
+exemplos/wire/07-a2a-agent-card.json
+  local    4ebecdb1d78777fff477ebb712eb5309b7f58f4ca9ded750c3e575a8336ebde2
+  upstream 4ebecdb1d78777fff477ebb712eb5309b7f58f4ca9ded750c3e575a8336ebde2
+  OK
+exemplos/wire/08-a2a-send-message.json
+  local    461be9c8f727620e19be864e94747f6733b99fdb7b4577ca012d72ded8215b2e
+  upstream 461be9c8f727620e19be864e94747f6733b99fdb7b4577ca012d72ded8215b2e
+  OK
+exemplos/wire/09-a2a-get-task-input-required.json
+  local    17af483d5d3e3abe64896f036acf31f9292fd4725a08c2cb4e16da730f205fed
+  upstream 17af483d5d3e3abe64896f036acf31f9292fd4725a08c2cb4e16da730f205fed
+  OK
+exemplos/wire/10-a2a-send-message-continuacao.json
+  local    9aa25d8c4a00a03c66416bdc9faca622cee4a86d61c3845bde77bd01c6720bb0
+  upstream 9aa25d8c4a00a03c66416bdc9faca622cee4a86d61c3845bde77bd01c6720bb0
+  OK
+exemplos/wire/11-tools-call-retry-recusa.json
+  local    63d60f668758edc32cf768ace0c4bf3256a6b7a8945c4f63c4cb706fbd97f0b9
+  upstream 63d60f668758edc32cf768ace0c4bf3256a6b7a8945c4f63c4cb706fbd97f0b9
+  OK
+validador/README.md
+  local    ccd6dd0727a179c71b1f4def751fec20a47d1fe92693ccb78bf2f06a7227bde1
+  upstream ccd6dd0727a179c71b1f4def751fec20a47d1fe92693ccb78bf2f06a7227bde1
+  OK
+validador/validar.py
+  local    aa5380d0c29ad577b61bc57c1ba6cbeb939e898205b30efb08db6eb585ee03c9
+  upstream aa5380d0c29ad577b61bc57c1ba6cbeb939e898205b30efb08db6eb585ee03c9
+  OK
+
+Total: 16 arquivos comparados; divergências: 0 
