@@ -8,9 +8,9 @@
 // quem a leu.
 //
 // Em memória de propósito: Tasks não sobrevivem ao restart do agente (o
-// contrato não pede). No Passo 11, o contexto de continuação MCP de uma Task
-// pausada fica num mapa privado ao lado deste, nunca dentro da Task, porque
-// a Task é devolvida ao cliente A2A e o requestState não pode vazar.
+// contrato não pede). O contexto de continuação MCP de uma Task pausada fica
+// em RetomadasPendentes (retomadas.ts), ao lado deste e nunca dentro da Task,
+// porque a Task é devolvida ao cliente A2A e o requestState não pode vazar.
 import type { Task } from '@a2a-js/sdk';
 import type { ServerCallContext, TaskStore } from '@a2a-js/sdk/server';
 import { exigirTransicao, nomeDoEstado } from './estados.ts';

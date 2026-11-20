@@ -1,7 +1,8 @@
 // Testes de integração do AGENTE A2A: dois processos reais (servidor MCP e
 // agente, cada um com o seu `src/main.ts`), conversando só por HTTP, como o
-// validador. Cada cenário que grava usa um dia próprio (03 a 12/12/2026) e
+// validador. Cada cenário que grava usa um dia próprio (03 a 20/12/2026) e
 // um trace-id próprio, para ler no log do MCP só os próprios requests.
+// Passo 11: pausa (INPUT_REQUIRED) e retomada pela ponte.
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { em as emNov, novoTraceparent, portaLivre, rpc, subirAgente, subirServidor, type ServidorDeTeste } from './apoio.ts';
@@ -167,16 +168,157 @@ describe('falhas', () => {
     assert.deepEqual(linhasDoMcp(traceId), []);
   });
 
-  test('conflito (input_required) → FAILED explícito, sem retry, sem artifact e sem requestState', async () => {
+});
+
+/** SendMessage que ocupa a sala e outro que pede o mesmo intervalo: o segundo pausa. */
+async function pausar(sala: string, dia: string, hi: string, hf: string, responsavel: string, traceparent?: string) {
+  assert.equal((await enviar(pedido(sala, dia, hi, hf, `Ocupante-${responsavel}`))).corpo.result.task.status.state, 'TASK_STATE_COMPLETED');
+  const r = await enviar(pedido(sala, dia, hi, hf, responsavel), { traceparent });
+  return { r, t: r.corpo.result.task };
+}
+const chamadasDoMcp = () => mcp.saida.texto.split(/\r?\n/).filter((l) => l.includes('recv method=tools/call'));
+
+describe('ponte: pausa (input_required → INPUT_REQUIRED)', () => {
+  test('conflito do contrato: Task pausada com "alternativas: sala-fusca, sala-mirante", sem artifact e sem requestState', async () => {
     const { traceparent, traceId } = novoTraceparent();
-    (await enviar(pedido('sala-garagem', '07', '14:00', '15:00', 'Ocupante'))).corpo.result.task;
-    const r = await enviar(pedido('sala-garagem', '07', '14:00', '15:00', 'Marty'), { traceparent });
+    const texto = 'reservar sala=sala-garagem inicio=2026-11-03T14:00:00-03:00 fim=2026-11-03T15:00:00-03:00 responsavel=Marty';
+    const r = await enviar(texto, { traceparent });
     const t = r.corpo.result.task;
-    assert.equal(t.status.state, 'TASK_STATE_FAILED');
-    assert.match(textoDe(t.status.message), /ainda nao permite escolher uma alternativa/);
+    assert.equal(t.status.state, 'TASK_STATE_INPUT_REQUIRED');
+    assert.equal(textoDe(t.status.message), 'alternativas: sala-fusca, sala-mirante');
+    assert.deepEqual(t.history.map((m: { role: string }) => m.role), ['ROLE_USER', 'ROLE_AGENT']);
+    assert.equal(textoDe(t.history[1]), 'alternativas: sala-fusca, sala-mirante');
     assert.deepEqual(t.artifacts ?? [], []);
     assert.equal(linhasDoMcp(traceId).filter((l) => l.includes('method=tools/call')).length, 1, 'nenhuma resposta automática à elicitation');
-    assert.ok(!r.texto.includes('requestState') && !r.texto.includes('v1.'), 'nada do requestState na resposta A2A');
+    assert.ok(!/requestState|inputRequests|v1\./.test(r.texto), 'nada do estado MCP na resposta A2A');
+    const g = (await getTask(t.id)).corpo;
+    const tg = g.result.task ?? g.result;
+    assert.deepEqual([tg.status.state, textoDe(tg.status.message)], ['TASK_STATE_INPUT_REQUIRED', 'alternativas: sala-fusca, sala-mirante']);
+    assert.ok(!/requestState|v1\./.test(JSON.stringify(g)));
+
+    // Cenário B: escolha=sala-mirante, SEM traceparent no header: o retry segue no trace da Task.
+    const c = await enviar('escolha=sala-mirante', { taskId: t.id });
+    const tc = c.corpo.result.task;
+    assert.equal(tc.status.state, 'TASK_STATE_COMPLETED');
+    assert.deepEqual([tc.id, tc.contextId], [t.id, t.contextId]);
+    assert.match(textoDe(tc.status.message), /^Reserva res-\d{4} confirmada na sala-mirante\.$/);
+    const reserva = conteudoDoArtifact(tc);
+    assert.deepEqual(reserva, { reserva: reserva.reserva, sala: 'sala-mirante', inicio: '2026-11-03T14:00:00-03:00', fim: '2026-11-03T15:00:00-03:00', responsavel: 'Marty', politica: '2026-11-01' });
+    assert.deepEqual(tc.history.map((m: { role: string }) => m.role), ['ROLE_USER', 'ROLE_AGENT', 'ROLE_USER', 'ROLE_AGENT']);
+    assert.equal(textoDe(tc.history[2]), 'escolha=sala-mirante');
+    assert.ok(!/requestState|v1\./.test(c.texto));
+
+    // No MCP: duas tools/call no mesmo trace-id, com ids JSON-RPC diferentes e spans novos.
+    const calls = linhasDoMcp(traceId).filter((l) => l.includes('method=tools/call'));
+    assert.equal(calls.length, 2);
+    const ids = calls.map((l) => /\bid=(\S+)/.exec(l)![1]);
+    assert.notEqual(ids[0], ids[1], 'retry com id JSON-RPC novo');
+    assert.notEqual(calls[0]!.split('traceparent=')[1], calls[1]!.split('traceparent=')[1]);
+    // e o agente não loga o requestState
+    assert.ok(!/v1\.[A-Za-z0-9_-]{20}/.test(agente.saida.texto));
+  });
+
+  test('continuação com OUTRO traceparent no header: o retry continua no trace-id da Task', async () => {
+    const original = novoTraceparent();
+    const outro = novoTraceparent();
+    const { t } = await pausar('sala-garagem', '20', '10:00', '11:00', 'Clara', original.traceparent);
+    const alt = textoDe(t.status.message).replace('alternativas: ', '').split(', ')[0];
+    const c = (await enviar(`escolha=${alt}`, { taskId: t.id, traceparent: outro.traceparent })).corpo.result.task;
+    assert.equal(c.status.state, 'TASK_STATE_COMPLETED');
+    assert.equal(linhasDoMcp(original.traceId).filter((l) => l.includes('method=tools/call')).length, 2, 'pausa e retry no trace da Task');
+    assert.deepEqual(linhasDoMcp(outro.traceId), [], 'o trace da continuação não substitui o da Task');
+    assert.match(agente.saida.texto, new RegExp(`traceparent da continuacao \\(${outro.traceId}\\) difere`));
+  });
+
+  test('o mesmo pedido produz a mesma pausa (determinismo)', async () => {
+    const a = await pausar('sala-garagem', '13', '10:00', '11:00', 'Doc');
+    const b = await enviar(pedido('sala-garagem', '13', '10:00', '11:00', 'Doc'));
+    assert.equal(textoDe(b.corpo.result.task.status.message), textoDe(a.t.status.message));
+    assert.match(textoDe(a.t.status.message), /^alternativas: \S+(, \S+)*$/);
+  });
+});
+
+describe('ponte: retomada (SendMessage com taskId)', () => {
+  test('escolha inválida: continua pausada, mesma mensagem, nenhum tools/call; depois a válida conclui', async () => {
+    const { t } = await pausar('sala-garagem', '14', '10:00', '11:00', 'Marty');
+    const pergunta = textoDe(t.status.message);
+    const alternativas = pergunta.replace('alternativas: ', '').split(', ');
+    const antes = chamadasDoMcp().length;
+    for (const texto of ['escolha=sala-aquario', 'quero a primeira', 'escolha=']) {
+      const r = await enviar(texto, { taskId: t.id });
+      assert.equal(r.corpo.result.task.status.state, 'TASK_STATE_INPUT_REQUIRED', texto);
+      assert.equal(textoDe(r.corpo.result.task.status.message), pergunta, 'mesma lista, mesmo texto');
+    }
+    assert.equal(chamadasDoMcp().length, antes, 'escolha inválida não vai ao MCP');
+    const ok = (await enviar(`escolha=${alternativas.at(-1)}`, { taskId: t.id })).corpo.result.task;
+    assert.equal(ok.status.state, 'TASK_STATE_COMPLETED');
+    assert.equal(conteudoDoArtifact(ok).sala, alternativas.at(-1));
+    assert.equal(chamadasDoMcp().length, antes + 1, 'a mesma continuação valeu depois das inválidas');
+    assert.equal(ok.history.length, 2 + 3 * 2 + 2, 'cada escolha inválida fica no histórico com a resposta');
+  });
+
+  test('recusa: decline → CANCELED, sem artifact, e a Task não aceita mais nada', async () => {
+    const { t } = await pausar('sala-garagem', '15', '10:00', '11:00', 'Biff');
+    const antes = chamadasDoMcp().length;
+    const r = (await enviar('escolha=recusar', { taskId: t.id })).corpo.result.task;
+    assert.equal(r.status.state, 'TASK_STATE_CANCELED');
+    assert.equal(textoDe(r.status.message), 'Reserva recusada: nenhuma sala foi reservada.');
+    assert.deepEqual(r.artifacts ?? [], []);
+    assert.equal(chamadasDoMcp().length, antes + 1, 'um tools/call com decline');
+    const de_novo = await enviar('escolha=sala-fusca', { taskId: t.id });
+    assert.equal(de_novo.corpo.error.code, -32004);
+    assert.equal(chamadasDoMcp().length, antes + 1);
+  });
+
+  test('Task concluída pela retomada não volta: nova escolha → -32004, nada muda', async () => {
+    const { t } = await pausar('sala-garagem', '16', '10:00', '11:00', 'Lorraine');
+    const alt = textoDe(t.status.message).replace('alternativas: ', '').split(', ')[0];
+    const c = (await enviar(`escolha=${alt}`, { taskId: t.id })).corpo.result.task;
+    assert.equal(c.status.state, 'TASK_STATE_COMPLETED');
+    const antes = chamadasDoMcp().length;
+    assert.equal((await enviar(`escolha=${alt}`, { taskId: t.id })).corpo.error.code, -32004);
+    const g = (await getTask(t.id)).corpo.result;
+    const tg = g.task ?? g;
+    assert.deepEqual([tg.status.state, tg.history.length, tg.artifacts.length], ['TASK_STATE_COMPLETED', 4, 1]);
+    assert.equal(chamadasDoMcp().length, antes);
+  });
+
+  test('duas escolhas simultâneas na mesma Task: só uma retoma, a outra é recusada', async () => {
+    const { t } = await pausar('sala-garagem', '17', '10:00', '11:00', 'Einstein');
+    const alt = textoDe(t.status.message).replace('alternativas: ', '').split(', ')[0];
+    const antes = chamadasDoMcp().length;
+    const [x, y] = await Promise.all([enviar(`escolha=${alt}`, { taskId: t.id }), enviar(`escolha=${alt}`, { taskId: t.id })]);
+    const estados = [x, y].map((r) => r.corpo.result?.task?.status.state ?? r.corpo.error?.code).sort();
+    assert.deepEqual(estados, [-32004, 'TASK_STATE_COMPLETED'].sort());
+    assert.equal(chamadasDoMcp().length, antes + 1, 'um único retry');
+  });
+
+  test('duas Tasks pausadas, retomadas em ordem inversa: cada uma com a sua reserva', async () => {
+    const a = (await pausar('sala-garagem', '18', '10:00', '11:00', 'George')).t;
+    const b = (await pausar('sala-garagem', '18', '14:00', '15:00', 'Jennifer')).t;
+    assert.deepEqual([a.status.state, b.status.state], ['TASK_STATE_INPUT_REQUIRED', 'TASK_STATE_INPUT_REQUIRED']);
+    const altB = textoDe(b.status.message).replace('alternativas: ', '').split(', ')[0];
+    const altA = textoDe(a.status.message).replace('alternativas: ', '').split(', ')[0];
+    const rb = (await enviar(`escolha=${altB}`, { taskId: b.id })).corpo.result.task;
+    const ra = (await enviar(`escolha=${altA}`, { taskId: a.id })).corpo.result.task;
+    const [xa, xb] = [conteudoDoArtifact(ra), conteudoDoArtifact(rb)];
+    assert.deepEqual([xa.responsavel, xa.inicio, xa.sala], ['George', em('18', '10:00'), altA]);
+    assert.deepEqual([xb.responsavel, xb.inicio, xb.sala], ['Jennifer', em('18', '14:00'), altB]);
+    assert.notEqual(xa.reserva, xb.reserva);
+    for (const id of [a.id, b.id]) {
+      const g = (await getTask(id)).corpo.result;
+      const tg = g.task ?? g;
+      assert.equal(tg.status.state, 'TASK_STATE_COMPLETED');
+      assert.equal(tg.history.length, 4);
+      assert.equal(tg.artifacts.length, 1);
+    }
+    assert.ok(!textoDe(ra.history[0]).includes('Jennifer') && !textoDe(rb.history[0]).includes('George'));
+  });
+
+  test('texto de escolha sem taskId é um pedido novo, mal formado: FAILED, nada é retomado', async () => {
+    const solta = (await enviar('escolha=sala-fusca')).corpo.result.task;
+    assert.equal(solta.status.state, 'TASK_STATE_FAILED');
+    assert.match(textoDe(solta.status.message), /Formato: reservar sala=/);
   });
 });
 
@@ -268,6 +410,42 @@ describe('MCP indisponível', () => {
       assert.equal(r3.corpo.result.task.status.state, 'TASK_STATE_FAILED', 'MCP caiu de novo: falha de transporte, sem derrubar o agente');
     } finally {
       await sozinho.parar();
+    }
+  });
+});
+
+describe('ponte: falhas na retomada', () => {
+  test('MCP fora do ar no retry → FAILED sem reserva; requestState rejeitado (segredo trocado) → FAILED com o erro de protocolo', async () => {
+    const porta = await portaLivre();
+    const url = new URL(`http://localhost:${porta}/mcp`);
+    let servidor = await subirServidor({ MCP_PORT: String(porta) });
+    const sozinho = await subirAgente(url);
+    const msg = (texto: string, taskId?: string) => ({ jsonrpc: '2.0', id: `f-${++seq}`, method: 'SendMessage', params: { message: { messageId: `m-${seq}`, role: 'ROLE_USER', parts: [{ text: texto }], ...(taskId ? { taskId } : {}) } } });
+    try {
+      const pausa = async (resp: string, hi: string, hf: string) => {
+        await rpc(sozinho.url, msg(pedido('sala-garagem', '19', hi, hf, `Ocupa-${resp}`)));
+        const t = (await rpc(sozinho.url, msg(pedido('sala-garagem', '19', hi, hf, resp)))).corpo.result.task;
+        assert.equal(t.status.state, 'TASK_STATE_INPUT_REQUIRED');
+        return { id: t.id as string, alt: textoDe(t.status.message).replace('alternativas: ', '').split(', ')[0] };
+      };
+      const a = await pausa('A', '10:00', '11:00');
+      const b = await pausa('B', '14:00', '15:00');
+
+      await servidor.parar();
+      const ra = (await rpc(sozinho.url, msg(`escolha=${a.alt}`, a.id))).corpo.result.task;
+      assert.equal(ra.status.state, 'TASK_STATE_FAILED');
+      assert.equal(textoDe(ra.status.message), 'Servidor de reservas indisponivel no momento.');
+      assert.equal(sozinho.processo.exitCode, null, 'o agente continua no ar');
+
+      // Novo processo MCP com OUTRO segredo: o requestState de B não vale mais (como se tivesse expirado).
+      servidor = await subirServidor({ MCP_PORT: String(porta) });
+      const rb = (await rpc(sozinho.url, msg(`escolha=${b.alt}`, b.id))).corpo.result.task;
+      assert.equal(rb.status.state, 'TASK_STATE_FAILED');
+      assert.match(textoDe(rb.status.message), /^Erro de protocolo no servidor de reservas \(codigo -32602\)\.$/);
+      assert.deepEqual(rb.artifacts ?? [], []);
+    } finally {
+      await sozinho.parar();
+      await servidor.parar();
     }
   });
 });

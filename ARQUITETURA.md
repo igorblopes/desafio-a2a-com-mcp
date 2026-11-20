@@ -163,7 +163,7 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
 │       └── dominio/
 │           ├── agenda.ts             carrega dados/, guarda reservas em memória, gera res-NNNN
 │           └── regras.ts             validações, conflito, alternativas, mensagens exatas (funções puras)
-└── agente/                      (✅ = já existe: Passos 8 a 10; o resto é planejado)
+└── agente/                      (✅ = já existe: Passos 8 a 11)
     ├── package.json             ✅
     ├── package-lock.json        ✅
     ├── tsconfig.json            ✅
@@ -174,16 +174,16 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
     │   │   ├── config.ts        ✅ A2A_PORT (7300) e A2A_PUBLIC_URL
     │   │   ├── card.ts          ✅ Agent Card v1.0 (espelho de exemplos/wire/07)
     │   │   ├── servidor.ts      ✅ express: card, /a2a, envelope JSON-RPC, A2A-Version, -32700
-    │   │   ├── manipulador.ts   ✅ DefaultRequestHandler do SDK; métodos fora do escopo → -32004
-    │   │   ├── executor.ts      ✅ AgentExecutor: Task SUBMITTED → WORKING → COMPLETED/FAILED
-    │   │   ├── reserva.ts       ✅ caso de uso "reservar" sobre o Host; traduz os 6 desfechos
+    │   │   ├── manipulador.ts   ✅ DefaultRequestHandler do SDK; fora do escopo → -32004; uma retomada por Task
+    │   │   ├── executor.ts      ✅ AgentExecutor: pedido novo, pausa (INPUT_REQUIRED) e retomada
+    │   │   ├── reserva.ts       ✅ caso de uso "reservar"/"retomar" sobre o Host; traduz os 6 desfechos
+    │   │   ├── ponte.ts         ✅ (Passo 11) pergunta do formulário, "alternativas: ...", leitura da escolha
     │   │   ├── mensagens.ts     ✅ Message, TaskStatus e Artifact no formato do SDK
     │   │   └── tarefas/
     │   │       ├── estados.ts   ✅ máquina de estados explícita; terminais protegidos
     │   │       ├── repositorio.ts ✅ TaskStore em memória que recusa transição inválida
+    │   │       ├── retomadas.ts ✅ (Passo 11) Map<taskId, Pendente>: continuação MCP privada, nunca serializada
     │   │       └── pedido.ts    ✅ parser do texto fixo (formato de entrada, não regra de domínio)
-    │   ├── ponte.ts             (Passo 11) retomada da Task com a escolha do usuário
-    │   ├── retomadas.ts         (Passo 11) Map<taskId, Continuacao>, privado, nunca serializado
     │   ├── trace.ts             ✅ parse/validação de traceparent e span filho
     │   ├── demo.ts              ✅ demonstração de terminal; consome só o Host (Passo 9)
     │   ├── host/                ✅ Host MCP (Passo 9)
@@ -199,7 +199,7 @@ Cada processo tem o **próprio** `package.json` e `package-lock.json`. Não há 
     │       ├── mrtr.ts          ✅ lê inputRequests, valida respostas contra o requestedSchema, monta inputResponses
     │       ├── politica.ts      ✅ URI da política e extração da versão (\r?\n)
     │       └── observacao.ts    ✅ fetch que registra o tráfego (testes e demo)
-    └── test/                    ✅ unidade, cliente, host, a2a-unidade, a2a (integração) + apoio.ts
+    └── test/                    ✅ unidade, cliente, host, a2a-unidade, a2a (integração), ponte + apoio.ts
 ```
 
 Por que essa granularidade:
@@ -1266,6 +1266,8 @@ A demo continua alterando a agenda. Reinicie o servidor antes de rodar o validad
 
 ### Passo 10: servidor A2A e Tasks (18/11/2026)
 
+> **Atualizado no Passo 11.** Esta seção descreve o agente como foi entregue no Passo 10, quando um conflito encerrava a Task em `FAILED`. No Passo 11, o conflito passou a pausar a Task (`INPUT_REQUIRED`), a retomada foi ligada e a máquina ganhou `WORKING → CANCELED` (recusa confirmada na retomada). Veja a seção "Passo 11" logo abaixo.
+
 | Item | Situação |
 |---|---|
 | `src/main.ts` (processo na 7300) e `src/a2a/` (card, servidor, manipulador, executor, reserva, mensagens, tarefas/) | ✅ |
@@ -1389,4 +1391,156 @@ cd servidor-mcp; npm start          # terminal 1 (7301)
 cd agente; npm start                # terminal 2 (7300); sobe mesmo sem o MCP
 cd agente; npm test                 # 92 testes; sobe os dois processos sozinhos em portas livres
 python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 29/36
+```
+
+### Passo 11: a ponte MCP/A2A (20/11/2026)
+
+| Item | Situação |
+|---|---|
+| `src/a2a/ponte.ts` (pergunta, mensagem, escolha) e `src/a2a/tarefas/retomadas.ts` (continuações por Task) | ✅ novos |
+| `executor.ts` (pausa e retomada), `reserva.ts` (`retomar`, desfechos `pausada` e `recusada`), `manipulador.ts` (uma retomada por Task) | ✅ |
+| `estados.ts`: `WORKING → CANCELED` (recusa confirmada pelo servidor durante a retomada) | ✅ |
+| `mcp/mrtr.ts`: opção única via `const`, além de `enum` | ✅ |
+| Testes: `a2a-unidade` (21), `a2a` (30, dois processos reais), `ponte` (4, fio MCP observado) | ✅ `npm test`: 114/114 |
+| Regressão | ✅ `servidor-mcp`: 135/135; validador **36/36** |
+
+**O que a ponte faz.** Ela liga dois mecanismos de estado que não se conhecem. O MCP é stateless: quando precisa de uma resposta, devolve `input_required` com um `requestState` opaco e esquece a chamada. O A2A tem Tasks: um objeto com id, estado e histórico, que vive entre requests. A ponte guarda o `requestState` (dentro da `Continuacao` do Host) **ao lado** da Task, indexado pelo `taskId`, e devolve ao cliente A2A só a pergunta. A resposta do cliente chega num `SendMessage` posterior com o mesmo `taskId`, e a ponte refaz o `tools/call` com o que guardou.
+
+**Mapeamento de estados.**
+
+| MCP (resultado do `tools/call`) | A2A (Task) |
+|---|---|
+| `complete` com `reservado: true` | `COMPLETED` + artifact `reserva` |
+| `input_required` (elicitation em form mode com opções) | `INPUT_REQUIRED` + mensagem `alternativas: …` |
+| `complete` com `reservado: false` depois de `decline` | `CANCELED` ("Reserva recusada: nenhuma sala foi reservada.") |
+| `isError: true` | `FAILED` com a mensagem da tool |
+| erro JSON-RPC (ex.: `-32602` de `requestState` inválido ou expirado) | `FAILED` ("Erro de protocolo no servidor de reservas (codigo X).") |
+| sem resposta (transporte) | `FAILED` ("Servidor de reservas indisponivel no momento.") |
+| `input_required` que a ponte não sabe responder (mais de um pedido, outro modo, sem opções) | `FAILED` |
+
+**Máquina de estados (Passo 11).**
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED: SendMessage sem taskId
+    SUBMITTED --> WORKING
+    WORKING --> COMPLETED: reservado true (artifact)
+    WORKING --> FAILED: isError, protocolo, transporte
+    WORKING --> INPUT_REQUIRED: input_required (continuação guardada)
+    INPUT_REQUIRED --> INPUT_REQUIRED: escolha inválida (nada vai ao MCP)
+    INPUT_REQUIRED --> WORKING: escolha válida ou recusar (retry MCP)
+    WORKING --> CANCELED: decline confirmado (reservado false)
+    INPUT_REQUIRED --> CANCELED
+    COMPLETED --> [*]
+    FAILED --> [*]
+    CANCELED --> [*]
+```
+
+A recusa passa por `WORKING` porque o agente ainda precisa enviar o `decline` ao servidor e esperar a confirmação. Por isso a tabela ganhou `WORKING → CANCELED`. Se esse envio falhar, a Task termina em `FAILED`, e não em `CANCELED`.
+
+**O contexto de continuação.** Ele é o `Pendente`, guardado em `RetomadasPendentes` (um `Map<taskId, Pendente>` privado do executor):
+
+| Campo | De onde vem | Para quê |
+|---|---|---|
+| `continuacao.ferramenta`, `continuacao.argumentos` | o `tools/call` original | o retry repete os dois exatamente; nada é reconstruído a partir do texto da escolha |
+| `continuacao.pedidos[0].chave` | a chave real de `inputRequests` | `inputResponses` usa a mesma chave |
+| `continuacao.pedidos[0].requestedSchema` | a elicitation | campo e opções válidas |
+| `continuacao.requestState` | a resposta do servidor, byte a byte | ecoado no retry; nunca lido, logado nem devolvido |
+| `continuacao.traceparent` | o header do `SendMessage` que criou a Task | o retry continua no mesmo trace |
+| `continuacao.operacao` | o `taskId` | o Host recusa retomar com outra operação |
+| `campo`, `alternativas`, `mensagem` | `perguntaDe(continuacao)` | validar a escolha e repetir a pergunta igual |
+| `politica` | `politica://uso`, lida na mesma Task | conferir a versão do resultado do retry |
+
+Esse mapa fica fora do `TaskStore`, de propósito. O `TaskStore` é o que `SendMessage` e `GetTask` devolvem ao cliente, então nada que o `TaskStore` guarda pode carregar o `requestState` (verificação 34). O mapa não tem rota HTTP, não é serializado (o `toJSON` só mostra a contagem) e não é logado.
+
+**Extração das alternativas.** `perguntaDe` exige exatamente um pedido em `inputRequests`, do tipo `elicitation/create` em form mode, e procura o campo `sala`. Se não houver um campo `sala`, ela aceita o único campo que tiver opções. As opções vêm do `enum`, ou do `const` quando há uma só, **na ordem do servidor**. A mensagem é `"alternativas: " + opções.join(", ")`. A ponte não consulta salas e não recalcula nada: quem decide o que oferecer é o servidor MCP.
+
+**A escolha.** `lerEscolha` só reconhece dois formatos:
+
+- `escolha=<opção>`, com a opção presente nas alternativas guardadas, vira `{action: "accept", content: {sala: <opção>}}`;
+- `escolha=recusar` vira `{action: "decline"}`.
+
+Qualquer outra coisa é inválida: uma sala fora da lista, outro texto ou o campo vazio. Nesse caso a Task continua `INPUT_REQUIRED`, recebe **a mesma** mensagem `alternativas: …`, a continuação não muda e **nenhum** request vai ao MCP (verificação 29).
+
+**O retry.** É `host.continuar(continuacao, resposta, ctx)`. O Host monta o `tools/call` assim:
+
+- os `arguments` são os originais;
+- `params.inputResponses` vale `{<chave original>: resposta}`;
+- `params.requestState` é o valor guardado, intacto;
+- `params._meta` leva o `traceparent` da Task.
+
+Nada disso vai dentro de `arguments`. O id JSON-RPC é o próximo do contador do Cliente MCP, então é sempre diferente do id da chamada que pausou: no log, `id=3` na pausa e `id=4` no retry. Não existe retry automático, porque a chamada escreve na agenda.
+
+**Uma retomada por vez.** A continuação é consumida (`tomar`) no início da retomada. Além disso, o `ManipuladorDaCentral` só deixa passar um `SendMessage` por Task de cada vez, e só para uma Task em `INPUT_REQUIRED`. Um segundo `SendMessage` simultâneo recebe `-32004`, e só um retry chega ao servidor (há teste com `Promise.all`). Para Task inexistente, o SDK responde `-32001`; para Task terminal, `-32004`, sem tocar no MCP nem no histórico.
+
+**Fluxo completo.**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente A2A
+    participant X as Agente A2A<br/>(executor + ponte)
+    participant P as RetomadasPendentes<br/>Map taskId → Pendente
+    participant H as Host MCP
+    participant S as Servidor MCP
+
+    C->>X: SendMessage "reservar sala=sala-garagem ..."<br/>traceparent T
+    X->>X: Task SUBMITTED → WORKING
+    X->>H: descobrir · lerPolitica · executar(reservar_sala)
+    H->>S: tools/call (id=3, trace T)
+    S-->>H: input_required {inputRequests{chave: form sala enum}, requestState RS}
+    H-->>X: {input_required, continuacao{args, chave, schema, RS, T}}
+    X->>X: perguntaDe → "alternativas: sala-fusca, sala-mirante"
+    X->>P: guardar(taskId, Pendente) ← requestState RS fica AQUI
+    X-->>C: Task INPUT_REQUIRED + "alternativas: ..." (sem RS)
+    Note over C,X: o request HTTP termina; nenhuma conexão fica aberta
+
+    C->>X: SendMessage "escolha=sala-aquario" (taskId)
+    X->>P: obter(taskId)
+    X-->>C: INPUT_REQUIRED, mesma mensagem (nada vai ao MCP)
+
+    C->>X: SendMessage "escolha=sala-mirante" (taskId)
+    X->>P: tomar(taskId) → Pendente ← RS recuperado AQUI
+    X->>X: INPUT_REQUIRED → WORKING
+    X->>H: continuar(continuacao, accept{sala: sala-mirante})
+    H->>S: tools/call (id=4, NOVO, trace T)<br/>mesmos arguments + inputResponses{chave} + requestState RS
+    S-->>H: complete {reservado: true, reserva: res-0003, ...}
+    H-->>X: {completo}
+    X-->>C: Task COMPLETED + artifact reserva (sala-mirante)
+```
+
+**Recusa.** `escolha=recusar` gera um `tools/call` com `{action: "decline"}` na mesma chave e com o mesmo `requestState`. O servidor responde `complete` com `reservado: false` e `motivo: "recusado"`. Isso é uma conclusão normal do MCP, que o A2A traduz em `CANCELED`, sem artifact. Depois disso, a Task recusa novos `SendMessage` com `-32004`.
+
+**Isolamento.** Cada Task tem a sua entrada no mapa, com `requestState`, chave, alternativas e argumentos próprios. Não existe "última continuação". Os testes pausam duas Tasks, retomam a segunda primeiro e conferem que cada retry levou o `requestState` e os argumentos da própria Task, e que cada artifact tem a sua reserva.
+
+**`traceparent`.** O trace da Task é o do `SendMessage` que a criou, e ele fica guardado na continuação. Na retomada vale esse trace. O header da continuação só é usado se a Task não tinha nenhum. Se o header da continuação trouxer outro trace-id, o agente registra a diferença e mantém o original. Assim, pausa e retry aparecem no stderr do MCP com o mesmo trace-id, cada request com um span novo.
+
+**Falhas durante a retomada.** Política: qualquer falha **depois** de a escolha ter sido aceita termina a Task em `FAILED`, sem reenvio automático. Uma reserva é escrita, então reenviar às cegas poderia reservar duas vezes.
+
+| Caso | Resultado |
+|---|---|
+| MCP fora do ar no retry | `FAILED` "Servidor de reservas indisponivel no momento."; o agente segue no ar |
+| `requestState` rejeitado (expirado, adulterado ou de outro segredo) | `FAILED` "Erro de protocolo no servidor de reservas (codigo -32602)." O teste reinicia o MCP com outro segredo para simular isso |
+| `isError` no retry | `FAILED` com a mensagem da tool |
+| Nova pausa no retry (a sala escolhida foi ocupada nesse meio tempo) | volta a `INPUT_REQUIRED` com a nova lista e a nova continuação (rodada 2) |
+| Resultado sem `reservado: true` | nunca vira `COMPLETED` |
+
+**Testes e mutações.** `ponte.test.ts` olha o fio MCP: confere chave, `requestState`, argumentos, id novo, `decline` e isolamento. `a2a.test.ts` faz o fluxo por HTTP com os dois processos. Cobre pausa, `GetTask`, escolha inválida, válida, recusa, terminal, duas escolhas simultâneas, duas Tasks em ordem inversa, trace, falhas e ausência de vazamento. Para conferir que os testes pegam erros de verdade, quebrei a ponte de propósito, uma mutação de cada vez:
+
+| Mutação | Testes que falharam |
+|---|---|
+| Aceitar escolha fora da lista | 2 |
+| Reordenar as alternativas | 1 |
+| Sem a guarda de uma retomada por Task | 1 |
+| Recusa traduzida como falha | 2 |
+| Retry com o trace do header da continuação | 1 |
+| Pausa virando `FAILED` (comportamento do Passo 10) | 8 |
+
+**Comandos.**
+
+```powershell
+cd servidor-mcp; npm start          # terminal 1 (7301)
+cd agente; npm start                # terminal 2 (7300)
+cd agente; npm test                 # 114 testes; sobe os processos sozinhos em portas livres
+python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 36/36 com os dois processos recém-iniciados
 ```

@@ -1,13 +1,13 @@
 # agente
 
-Hoje (Passo 10): **servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
+Hoje (Passo 11): **servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
 
-- `src/main.ts` e `src/a2a/`: Agent Card, `POST /a2a` (`SendMessage`, `GetTask`), Tasks em memória com máquina de estados explícita e artifact `reserva`.
+- `src/main.ts` e `src/a2a/`: Agent Card, `POST /a2a` (`SendMessage`, `GetTask`), Tasks em memória com máquina de estados explícita, artifact `reserva` e a **ponte**: um conflito pausa a Task (`INPUT_REQUIRED`) e um novo `SendMessage` com o mesmo `taskId` a retoma.
 - `src/mcp/`: cliente, só protocolo (transporte, `_meta`, headers, ids, erros JSON-RPC e de rede).
 - `src/host/`: Host, que organiza o uso (catálogo, política, contexto de execução, continuação MRTR, seis desfechos). Não tem nenhuma regra de salas.
 - `src/demo.ts`: aplicação de terminal que consome só o Host.
 
-Detalhes de projeto: seções "Passo 8", "Passo 9" e "Passo 10" de [`../ARQUITETURA.md`](../ARQUITETURA.md).
+Detalhes de projeto: seções "Passo 8" a "Passo 11" de [`../ARQUITETURA.md`](../ARQUITETURA.md).
 
 ## Como rodar
 
@@ -40,7 +40,14 @@ curl -s http://localhost:7300/a2a -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":"req-2","method":"GetTask","params":{"id":"<task.id da resposta anterior>"}}'
 ```
 
-Desfechos: `TASK_STATE_COMPLETED` com o artifact `reserva`; `TASK_STATE_FAILED` com a mensagem do servidor MCP (por exemplo `Sala inexistente: sala-delorean`), com a mensagem de conflito (escolher uma alternativa só chega no Passo 11) ou com `Servidor de reservas indisponivel no momento.`. Uma Task terminal não aceita nova mensagem (`-32004`).
+Desfechos: `TASK_STATE_COMPLETED` com o artifact `reserva`; `TASK_STATE_FAILED` com a mensagem do servidor MCP (por exemplo `Sala inexistente: sala-delorean`) ou com `Servidor de reservas indisponivel no momento.`; `TASK_STATE_INPUT_REQUIRED` quando a sala está ocupada, com a mensagem `alternativas: sala-fusca, sala-mirante`. Uma Task terminal não aceita nova mensagem (`-32004`).
+
+Para responder a uma Task pausada, mande outro `SendMessage` com `"taskId"` dentro de `message` e o texto `escolha=<sala>` (conclui a reserva) ou `escolha=recusar` (`TASK_STATE_CANCELED`). Uma escolha fora da lista deixa a Task pausada, com a mesma mensagem:
+
+```bash
+curl -s http://localhost:7300/a2a -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"req-3","method":"SendMessage","params":{"message":{"messageId":"m2","role":"ROLE_USER","taskId":"<task.id pausada>","parts":[{"text":"escolha=sala-mirante"}]}}}'
+```
 
 As Tasks ficam em memória: reiniciar o agente apaga todas. Reinicie os dois processos antes de rodar o validador.
 

@@ -1,5 +1,6 @@
 // Testes unitários da camada A2A (sem HTTP): máquina de estados,
-// repositório de Tasks, parser do pedido e Agent Card.
+// repositório de Tasks, parser do pedido, Agent Card e (Passo 11) a parte
+// pura da ponte: pergunta, escolha e continuações por Task.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -10,6 +11,10 @@ import { lerConfigDoAgente } from '../src/a2a/config.ts';
 import { ehTerminal, exigirTransicao, podeTransitar, TransicaoInvalida } from '../src/a2a/tarefas/estados.ts';
 import { lerPedido } from '../src/a2a/tarefas/pedido.ts';
 import { RepositorioDeTasks } from '../src/a2a/tarefas/repositorio.ts';
+import { criarContinuacao } from '../src/host/continuacao.ts';
+import { lerPedidos } from '../src/mcp/mrtr.ts';
+import { lerEscolha, mensagemDeAlternativas, perguntaDe } from '../src/a2a/ponte.ts';
+import { RetomadasPendentes, type Pendente } from '../src/a2a/tarefas/retomadas.ts';
 import { DIR_DO_AGENTE } from './apoio.ts';
 
 const S = TaskState;
@@ -24,7 +29,9 @@ describe('máquina de estados', () => {
       [S.TASK_STATE_WORKING, S.TASK_STATE_INPUT_REQUIRED],
       [S.TASK_STATE_INPUT_REQUIRED, S.TASK_STATE_WORKING],
       [S.TASK_STATE_INPUT_REQUIRED, S.TASK_STATE_CANCELED],
+      [S.TASK_STATE_WORKING, S.TASK_STATE_CANCELED],
       [S.TASK_STATE_WORKING, S.TASK_STATE_WORKING],
+      [S.TASK_STATE_INPUT_REQUIRED, S.TASK_STATE_INPUT_REQUIRED],
     ] as const) {
       assert.ok(podeTransitar(de, para), `${de} → ${para}`);
     }
@@ -34,8 +41,8 @@ describe('máquina de estados', () => {
       [undefined, S.TASK_STATE_WORKING],
       [S.TASK_STATE_SUBMITTED, S.TASK_STATE_COMPLETED],
       [S.TASK_STATE_WORKING, S.TASK_STATE_SUBMITTED],
-      [S.TASK_STATE_WORKING, S.TASK_STATE_CANCELED],
       [S.TASK_STATE_INPUT_REQUIRED, S.TASK_STATE_COMPLETED],
+      [S.TASK_STATE_INPUT_REQUIRED, S.TASK_STATE_FAILED],
       [S.TASK_STATE_COMPLETED, S.TASK_STATE_WORKING],
       [S.TASK_STATE_FAILED, S.TASK_STATE_WORKING],
       [S.TASK_STATE_CANCELED, S.TASK_STATE_WORKING],
@@ -125,5 +132,91 @@ describe('Agent Card e configuração', () => {
     const c = lerConfigDoAgente({ A2A_PORT: '8080', A2A_PUBLIC_URL: 'http://127.0.0.1:8080/', MCP_URL: 'http://127.0.0.1:9/mcp' });
     assert.deepEqual([c.porta, c.urlPublica, c.mcp.port], [8080, 'http://127.0.0.1:8080', '9']);
     assert.throws(() => lerConfigDoAgente({ A2A_PORT: 'x' }), /A2A_PORT/);
+  });
+});
+
+// ---- Passo 11: ponte (tradução pura) e continuações por Task ----
+
+const formulario = (props: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+  method: 'elicitation/create',
+  params: { mode: 'form', message: 'Escolha', requestedSchema: { type: 'object', properties: props, required: Object.keys(props) } },
+  ...extra,
+});
+const continuacaoCom = (inputRequests: Record<string, unknown>, requestState = 'v1.OPACO') =>
+  criarContinuacao({
+    operacao: 't1',
+    ferramenta: 'reservar_sala',
+    argumentos: { sala: 'sala-garagem' },
+    pedidos: lerPedidos({ resultType: 'input_required', inputRequests, requestState } as never),
+    requestState,
+    traceparent: undefined,
+    rodada: 1,
+  });
+
+describe('ponte: pergunta tirada do formulário do servidor', () => {
+  test('enum: chave real, campo sala, ordem do servidor e mensagem exata', () => {
+    const c = continuacaoCom({ '__main__:escolha_de_sala': formulario({ sala: { type: 'string', enum: ['sala-mirante', 'sala-fusca'] } }) });
+    assert.equal(c.pedidos[0]!.chave, '__main__:escolha_de_sala');
+    assert.deepEqual(perguntaDe(c), { ok: true, campo: 'sala', alternativas: ['sala-mirante', 'sala-fusca'], mensagem: 'alternativas: sala-mirante, sala-fusca' });
+  });
+  test('const (uma alternativa só) também vale', () => {
+    const c = continuacaoCom({ k: formulario({ sala: { type: 'string', const: 'sala-mirante' } }) });
+    assert.deepEqual(perguntaDe(c), { ok: true, campo: 'sala', alternativas: ['sala-mirante'], mensagem: 'alternativas: sala-mirante' });
+  });
+  test('formulários que a ponte não sabe responder', () => {
+    assert.equal(perguntaDe(continuacaoCom({})).ok, false);
+    assert.equal(perguntaDe(continuacaoCom({ a: formulario({ sala: { enum: ['x'] } }), b: formulario({ sala: { enum: ['y'] } }) })).ok, false);
+    assert.equal(perguntaDe(continuacaoCom({ k: formulario({ nome: { type: 'string' } }) })).ok, false);
+    assert.equal(perguntaDe(continuacaoCom({ k: { method: 'elicitation/create', params: { mode: 'url', url: 'https://x' } } })).ok, false);
+  });
+  test('mensagem é estável (mesma lista → mesmo texto)', () => {
+    assert.equal(mensagemDeAlternativas(['sala-fusca', 'sala-mirante']), 'alternativas: sala-fusca, sala-mirante');
+    assert.equal(mensagemDeAlternativas(['sala-fusca', 'sala-mirante']), mensagemDeAlternativas(['sala-fusca', 'sala-mirante']));
+  });
+});
+
+describe('ponte: escolha do cliente', () => {
+  const alts = ['sala-fusca', 'sala-mirante'];
+  test('escolha válida vira accept no campo do formulário', () => {
+    assert.deepEqual(lerEscolha('escolha=sala-mirante', 'sala', alts), { tipo: 'aceitar', valor: 'sala-mirante', resposta: { action: 'accept', content: { sala: 'sala-mirante' } } });
+  });
+  test('escolha=recusar vira decline', () => {
+    assert.deepEqual(lerEscolha('escolha=recusar', 'sala', alts), { tipo: 'recusar', resposta: { action: 'decline' } });
+  });
+  test('fora da lista ou fora do formato: inválida', () => {
+    for (const t of ['escolha=sala-aquario', 'escolha=', 'sala-fusca', 'quero a primeira', 'escolha=sala-fusca extra', 'ESCOLHA=sala-fusca']) {
+      assert.equal(lerEscolha(t, 'sala', alts).tipo, 'invalida', t);
+    }
+  });
+});
+
+describe('continuações pendentes por Task', () => {
+  const pendente = (rs: string, alts: string[]): Pendente => ({
+    continuacao: continuacaoCom({ k: formulario({ sala: { enum: alts } }) }, rs),
+    campo: 'sala',
+    alternativas: alts,
+    mensagem: mensagemDeAlternativas(alts),
+    politica: '2026-11-01',
+  });
+  test('uma entrada por taskId, sem mistura; tomar consome', () => {
+    const r = new RetomadasPendentes();
+    r.guardar('A', pendente('v1.AAA', ['sala-fusca']));
+    r.guardar('B', pendente('v1.BBB', ['sala-mirante']));
+    assert.equal(r.obter('A')!.continuacao.requestState, 'v1.AAA');
+    assert.equal(r.obter('B')!.continuacao.requestState, 'v1.BBB');
+    assert.deepEqual(r.obter('B')!.alternativas, ['sala-mirante']);
+    assert.equal(r.tomar('B')!.continuacao.requestState, 'v1.BBB');
+    assert.equal(r.obter('B'), undefined);
+    assert.equal(r.tomar('B'), undefined, 'uma continuação só é usada uma vez');
+    assert.equal(r.obter('A')!.continuacao.requestState, 'v1.AAA', 'A não foi afetada');
+    assert.equal(r.tamanho, 1);
+  });
+  test('não vaza por JSON nem por quem a recebeu', () => {
+    const r = new RetomadasPendentes();
+    r.guardar('A', pendente('v1.SEGREDO', ['sala-fusca']));
+    assert.ok(!JSON.stringify({ r }).includes('SEGREDO'));
+    assert.throws(() => {
+      (r.obter('A')!.alternativas as string[]).push('sala-x');
+    });
   });
 });

@@ -9,13 +9,14 @@ import { ExecutorDeReservas } from './a2a/executor.ts';
 import { ConexaoMcp, ServicoDeReserva } from './a2a/reserva.ts';
 import { criarAplicacao } from './a2a/servidor.ts';
 import { RepositorioDeTasks } from './a2a/tarefas/repositorio.ts';
+import { RetomadasPendentes } from './a2a/tarefas/retomadas.ts';
 
 const config = lerConfigDoAgente();
 const conexao = new ConexaoMcp({ url: config.mcp });
 const app = criarAplicacao({
   card: criarAgentCard(config.urlPublica),
   tasks: new RepositorioDeTasks(),
-  executor: new ExecutorDeReservas(new ServicoDeReserva(conexao)),
+  executor: new ExecutorDeReservas(new ServicoDeReserva(conexao), new RetomadasPendentes()),
 });
 
 const servidor = app.listen(config.porta, () => {

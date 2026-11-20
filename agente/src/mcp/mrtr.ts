@@ -17,7 +17,7 @@ export interface CampoDeFormulario {
   tipo: string | undefined;
   titulo: string | undefined;
   obrigatorio: boolean;
-  /** Valores permitidos (enum), quando o schema restringe. */
+  /** Valores permitidos (enum, ou const quando há um só), na ordem do schema. */
   opcoes: string[] | undefined;
 }
 
@@ -53,7 +53,7 @@ function campos(schema: Objeto | undefined): CampoDeFormulario[] {
       tipo: typeof d.type === 'string' ? d.type : undefined,
       titulo: typeof d.title === 'string' ? d.title : undefined,
       obrigatorio: obrigatorios.includes(nome),
-      opcoes: Array.isArray(d.enum) ? d.enum.map(String) : undefined,
+      opcoes: Array.isArray(d.enum) ? d.enum.map(String) : d.const !== undefined ? [String(d.const)] : undefined,
     };
   });
 }
