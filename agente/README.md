@@ -1,6 +1,6 @@
 # agente
 
-Hoje (Passo 11): **servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
+Hoje (Passo 12): **servidor A2A** na porta 7300 (`@a2a-js/sdk` 1.3.0, protocolo A2A 1.0, JSON-RPC) que atende pedidos de reserva criando **Tasks** e os executa pelo **Host MCP**, que fala com o servidor da Central de Salas só por HTTP (Streamable HTTP, revisão `2026-07-28`, `@modelcontextprotocol/client` 2.4.0). Nada é importado de `servidor-mcp/`.
 
 - `src/main.ts` e `src/a2a/`: Agent Card, `POST /a2a` (`SendMessage`, `GetTask`), Tasks em memória com máquina de estados explícita, artifact `reserva` e a **ponte**: um conflito pausa a Task (`INPUT_REQUIRED`) e um novo `SendMessage` com o mesmo `taskId` a retoma.
 - `src/mcp/`: cliente, só protocolo (transporte, `_meta`, headers, ids, erros JSON-RPC e de rede).
@@ -25,7 +25,7 @@ cd servidor-mcp; npm start     # terminal 1: MCP na 7301 (precisa de REQUEST_STA
 cd agente; npm start           # terminal 2: A2A na 7300 (sobe mesmo sem o MCP)
 ```
 
-Variáveis: `A2A_PORT` (padrão 7300), `A2A_PUBLIC_URL` (padrão `http://localhost:<porta>`, vai no card) e `MCP_URL` (padrão `http://localhost:7301/mcp`).
+Variáveis: `A2A_PORT` (padrão 7300), `A2A_PUBLIC_URL` (padrão `http://localhost:<porta>`, vai no card), `MCP_URL` (padrão `http://localhost:7301/mcp`) e `MCP_TIMEOUT_MS` (padrão 20000, entre 1000 e 120000: quanto o agente espera por uma resposta do servidor MCP antes de desistir; um `tools/call` sem resposta termina a Task em `FAILED` dizendo que não dá para confirmar se a reserva foi registrada, e nunca é reenviado sozinho).
 
 O pedido é um texto fixo: `reservar sala=<id> inicio=<ISO> fim=<ISO> responsavel=<nome>`. O agente só lê o formato; as regras de salas são do servidor MCP.
 
@@ -65,7 +65,7 @@ npm run demo -- --sala sala-porao --inicio 2026-11-25T09:00:00-03:00 --fim 2026-
 npm run demo -- --traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 ```
 
-`MCP_URL` muda o endpoint (padrão `http://localhost:7301/mcp`). A demo imprime o catálogo, a política com a origem, cada request enviado (id JSON-RPC, `Mcp-Method`, `Mcp-Name`, `MCP-Protocol-Version`, `traceparent`), o tipo de cada resultado e a continuação resumida (sem o `requestState`).
+`MCP_URL` muda o endpoint (padrão `http://localhost:7301/mcp`) e `MCP_TIMEOUT_MS` a espera máxima por resposta (padrão 20000). A demo imprime o catálogo, a política com a origem, cada request enviado (id JSON-RPC, `Mcp-Method`, `Mcp-Name`, `MCP-Protocol-Version`, `traceparent`), o tipo de cada resultado e a continuação resumida (sem o `requestState`).
 
 A demo altera a agenda do servidor (que é em memória). Reinicie o servidor antes de rodar o validador.
 

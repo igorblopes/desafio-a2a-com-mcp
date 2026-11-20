@@ -39,6 +39,18 @@ export type Desfecho =
 export const MENSAGEM_DE_RECUSA = 'Reserva recusada: nenhuma sala foi reservada.';
 export const MENSAGEM_PERGUNTA_NAO_SUPORTADA = 'O servidor de reservas pediu uma informacao que este agente nao sabe responder.';
 export const MENSAGEM_SEM_MCP = 'Servidor de reservas indisponivel no momento.';
+/**
+ * O tools/call foi enviado e a resposta não veio a tempo. Diferente de
+ * "indisponível": o servidor pode ter gravado a reserva, então o agente não
+ * afirma nada e não reenvia (a operação escreve).
+ */
+export const MENSAGEM_SEM_RESPOSTA = 'O servidor de reservas nao respondeu a tempo; nao e possivel confirmar se a reserva foi registrada.';
+/** O servidor recusou a continuação (-32602): requestState vencido, adulterado ou de outro segredo. */
+export const MENSAGEM_CONTINUACAO_RECUSADA = 'O servidor de reservas recusou a continuacao (prazo vencido ou estado invalido); nenhuma sala foi reservada. Faca um novo pedido.';
+/** Código do SDK para timeout de request (SdkErrorCode.RequestTimeout). */
+const TIMEOUT_DO_SDK = 'REQUEST_TIMEOUT';
+/** Campos que um resultado com reservado: true precisa trazer, todos texto. */
+const CAMPOS_DA_RESERVA = ['reserva', 'sala', 'inicio', 'fim', 'responsavel', 'politica'] as const;
 
 export type Registro = (linha: string) => void;
 
@@ -46,7 +58,7 @@ export type Registro = (linha: string) => void;
 export class ConexaoMcp {
   #host: Promise<HostMcp> | undefined;
 
-  constructor(private readonly opcoes: { url: URL; fetch?: FetchLike }) {}
+  constructor(private readonly opcoes: { url: URL; fetch?: FetchLike; timeoutMs?: number }) {}
 
   host(ctx: ContextoDeExecucao): Promise<HostMcp> {
     this.#host ??= HostMcp.iniciar(this.opcoes, ctx).catch((e: unknown) => {
@@ -75,7 +87,7 @@ export class ServicoDeReserva {
       await host.descobrir(ctx);
       const politica = await host.lerPolitica(ctx);
       const r = await host.executar(TOOL_DE_RESERVA, { ...pedido }, ctx);
-      return this.#traduzir(r, politica.versao, false);
+      return this.#traduzir(r, { politica: politica.versao, retomada: false, recusou: false });
     } catch (e) {
       return this.#falhaInesperada(e);
     }
@@ -91,13 +103,13 @@ export class ServicoDeReserva {
     try {
       const host = await this.conexao.host(ctx);
       const r = await host.continuar(pendente.continuacao, resposta, ctx);
-      return this.#traduzir(r, pendente.politica, resposta.action === 'decline');
+      return this.#traduzir(r, { politica: pendente.politica, retomada: true, recusou: resposta.action === 'decline' });
     } catch (e) {
       return this.#falhaInesperada(e);
     }
   }
 
-  #traduzir(r: ResultadoDaOperacao, versaoLida: string, recusou: boolean): Desfecho {
+  #traduzir(r: ResultadoDaOperacao, { politica: versaoLida, retomada, recusou }: { politica: string; retomada: boolean; recusou: boolean }): Desfecho {
     switch (r.tipo) {
       case 'completo': {
         const sc = (r.estruturado ?? {}) as Partial<Reserva> & { reservado?: boolean; motivo?: string | null };
@@ -107,6 +119,12 @@ export class ServicoDeReserva {
         }
         if (sc.reservado !== true || typeof sc.reserva !== 'string') {
           return { tipo: 'falhou', motivo: 'resposta', mensagem: `O servidor de reservas nao confirmou a reserva${sc.motivo ? ` (${sc.motivo})` : ''}.` };
+        }
+        // Sem os seis campos não há artifact honesto: COMPLETED exige a reserva inteira.
+        const faltando = CAMPOS_DA_RESERVA.filter((c) => typeof sc[c] !== 'string' || sc[c] === '');
+        if (faltando.length > 0) {
+          this.registrar(`[a2a] resultado de reserva incompleto (faltam: ${faltando.join(', ')})`);
+          return { tipo: 'falhou', motivo: 'resposta', mensagem: 'O servidor de reservas respondeu sem os dados completos da reserva.' };
         }
         // O MCP é a fonte da verdade: a reserva vem do structuredContent, não do texto do usuário.
         const reserva: Reserva = { reserva: sc.reserva, sala: sc.sala!, inicio: sc.inicio!, fim: sc.fim!, responsavel: sc.responsavel!, politica: sc.politica! };
@@ -130,9 +148,15 @@ export class ServicoDeReserva {
         return { tipo: 'pausada', pendente: { continuacao: r.continuacao, campo: p.campo, alternativas: p.alternativas, mensagem: p.mensagem, politica: versaoLida } };
       }
       case 'erro_protocolo':
+        // Na retomada, os argumentos são os originais (já aceitos na 1ª rodada):
+        // um -32602 aqui é o requestState recusado. A ponte não sabe POR QUÊ
+        // (não lê o estado); só diz que a continuação não vale mais.
+        if (retomada && r.codigo === -32602) return { tipo: 'falhou', motivo: 'protocolo', mensagem: MENSAGEM_CONTINUACAO_RECUSADA };
         return { tipo: 'falhou', motivo: 'protocolo', mensagem: `Erro de protocolo no servidor de reservas (codigo ${r.codigo ?? '-'}).` };
       case 'falha_transporte':
         void this.conexao.descartar();
+        this.registrar(`[a2a] falha de transporte no tools/call (${r.codigo ?? '-'}): ${resumo(r.mensagem)}`);
+        if (r.codigo === TIMEOUT_DO_SDK) return { tipo: 'falhou', motivo: 'transporte', mensagem: MENSAGEM_SEM_RESPOSTA };
         return { tipo: 'falhou', motivo: 'transporte', mensagem: MENSAGEM_SEM_MCP };
       case 'resposta_invalida':
         // Não acontece pela ponte (a escolha é validada antes), mas se
@@ -144,6 +168,7 @@ export class ServicoDeReserva {
   #falhaInesperada(e: unknown): Desfecho {
     if (e instanceof ErroMcp && e.categoria === 'transporte') {
       void this.conexao.descartar();
+      this.registrar(`[a2a] falha de transporte fora do tools/call (${e.codigo ?? '-'}): ${resumo(e.message)}`);
       return { tipo: 'falhou', motivo: 'transporte', mensagem: MENSAGEM_SEM_MCP };
     }
     if (e instanceof ErroMcp) {
@@ -154,7 +179,13 @@ export class ServicoDeReserva {
       this.registrar(`[a2a] erro de uso do Host: ${e.message}`);
       return { tipo: 'falhou', motivo: 'uso', mensagem: 'O servidor de reservas nao oferece a operacao de reserva no momento.' };
     }
-    this.registrar(`[a2a] falha inesperada: ${e instanceof Error ? e.message : String(e)}`);
+    this.registrar(`[a2a] falha inesperada: ${resumo(e instanceof Error ? `${e.name}: ${e.message}` : String(e))}`);
     return { tipo: 'falhou', motivo: 'resposta', mensagem: 'Falha inesperada ao falar com o servidor de reservas.' };
   }
+}
+
+/** Uma linha só, curta: erros do SDK (ex.: validação zod) podem ter dezenas de linhas. */
+function resumo(texto: string): string {
+  const linha = texto.replace(/\s+/g, ' ').trim();
+  return linha.length > 200 ? `${linha.slice(0, 200)}...` : linha;
 }

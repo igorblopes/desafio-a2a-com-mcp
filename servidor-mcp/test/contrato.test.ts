@@ -460,6 +460,52 @@ test('Mcp-Method divergente do corpo → HTTP 400 e -32020', async () => {
   assert.equal(corpo.error?.code, -32020);
 });
 
+// ---------- Passo 12: headers e versão (o que a borda recusa antes de qualquer tool) ----------
+
+test('MCP-Protocol-Version divergente do _meta, ou vazio → HTTP 400 e -32020', async () => {
+  for (const versao of ['2025-06-18', '']) {
+    const { status, corpo } = await mcp('tools/list', {}, { headers: { 'MCP-Protocol-Version': versao } });
+    assert.equal(status, 400, versao);
+    assert.equal(corpo.error?.code, -32020, versao);
+  }
+});
+
+test('versão não suportada no _meta (e no header) → HTTP 400 e -32022 com as versões suportadas', async () => {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'Mcp-Method': 'tools/list' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: proximoId++, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2025-06-18', 'io.modelcontextprotocol/clientCapabilities': {} } } }),
+  });
+  const corpo = (await r.json()) as any;
+  assert.equal(r.status, 400);
+  assert.equal(corpo.error?.code, -32022);
+  assert.deepEqual(corpo.error?.data?.supported, [PROTOCOLO]);
+});
+
+test('tools/call sem Mcp-Name → HTTP 400 e -32020 (a tool não roda)', async () => {
+  const { status, corpo } = await mcp('tools/call', { name: 'reservar_sala', arguments: { sala: 'sala-porao', inicio: DIA('08:00'), fim: DIA('09:00'), responsavel: 'SemNome' } });
+  assert.equal(status, 400);
+  assert.equal(corpo.error?.code, -32020);
+  const consulta = await mcp('tools/call', { name: 'consultar_disponibilidade', arguments: { sala: 'sala-porao', inicio: DIA('08:00'), fim: DIA('09:00') } }, { nome: 'consultar_disponibilidade' });
+  assert.equal(consulta.corpo.result.structuredContent.livre, true, 'nada foi reservado');
+});
+
+test('erros de execução nunca são erros JSON-RPC: as 4 regras + sem alternativa vêm em result.isError, HTTP 200', async () => {
+  const casos: [Record<string, string>, string][] = [
+    [{ sala: 'sala-delorean', inicio: DIA('09:00'), fim: DIA('10:00') }, 'Sala inexistente: sala-delorean'],
+    [{ sala: 'sala-porao', inicio: DIA('10:00'), fim: DIA('10:00') }, 'Intervalo invalido: fim deve ser posterior a inicio'],
+    [{ sala: 'sala-porao', inicio: DIA('19:30'), fim: DIA('20:30') }, 'Fora da janela de uso: a politica permite reservas entre 08:00 e 20:00'],
+    [{ sala: 'sala-porao', inicio: DIA('09:00'), fim: DIA('11:01') }, 'Duracao acima do limite: a politica permite no maximo 2 horas'],
+  ];
+  for (const [a, mensagem] of casos) {
+    const { status, corpo } = await mcp('tools/call', { name: 'reservar_sala', arguments: { ...a, responsavel: 'Regra' } }, { nome: 'reservar_sala' });
+    assert.equal(status, 200);
+    assert.equal(corpo.error, undefined);
+    assert.equal(corpo.result.isError, true);
+    assert.equal(corpo.result.content[0].text, mensagem);
+  }
+});
+
 // ---------- logs ----------
 
 test('stderr registra método, id e traceparent de cada operação', async () => {

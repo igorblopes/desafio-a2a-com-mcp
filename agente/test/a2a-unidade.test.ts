@@ -128,9 +128,9 @@ describe('Agent Card e configuração', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(criarAgentCard('http://localhost:7300'))), esperado);
   });
   test('padrões e variáveis de ambiente', () => {
-    assert.deepEqual(lerConfigDoAgente({}), { porta: 7300, urlPublica: 'http://localhost:7300', mcp: new URL('http://localhost:7301/mcp') });
-    const c = lerConfigDoAgente({ A2A_PORT: '8080', A2A_PUBLIC_URL: 'http://127.0.0.1:8080/', MCP_URL: 'http://127.0.0.1:9/mcp' });
-    assert.deepEqual([c.porta, c.urlPublica, c.mcp.port], [8080, 'http://127.0.0.1:8080', '9']);
+    assert.deepEqual(lerConfigDoAgente({}), { porta: 7300, urlPublica: 'http://localhost:7300', mcp: new URL('http://localhost:7301/mcp'), timeoutMcpMs: 20_000 });
+    const c = lerConfigDoAgente({ A2A_PORT: '8080', A2A_PUBLIC_URL: 'http://127.0.0.1:8080/', MCP_URL: 'http://127.0.0.1:9/mcp', MCP_TIMEOUT_MS: '5000' });
+    assert.deepEqual([c.porta, c.urlPublica, c.mcp.port, c.timeoutMcpMs], [8080, 'http://127.0.0.1:8080', '9', 5000]);
     assert.throws(() => lerConfigDoAgente({ A2A_PORT: 'x' }), /A2A_PORT/);
   });
 });

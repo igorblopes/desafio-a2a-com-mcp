@@ -531,9 +531,10 @@ O log do servidor é feito **na borda HTTP**, em `main.ts`, antes do SDK: o corp
 | `DADOS_DIR` | servidor-mcp | `../dados` (relativo ao pacote) | não |
 | `REQUEST_STATE_SECRET` | servidor-mcp | — | **sim**: hex com ≥ 64 dígitos (32 bytes); o processo **não sobe** sem ela |
 | `REQUEST_STATE_TTL_SECONDS` | servidor-mcp | `900` (15 min) | não (validado entre 300 e 1800) |
-| `AGENTE_PORT` | agente | `7300` | não |
+| `A2A_PORT` | agente | `7300` | não |
 | `MCP_URL` | agente | `http://localhost:7301/mcp` | não |
-| `A2A_PUBLIC_URL` | agente | `http://localhost:7300/a2a` | não (vai no card) |
+| `A2A_PUBLIC_URL` | agente | `http://localhost:<porta>` | não (o card anuncia `<url>/a2a`) |
+| `MCP_TIMEOUT_MS` | agente | `20000` | não (inteiro entre 1000 e 120000; o processo não sobe fora disso) |
 
 Nenhum segredo vai para o repositório. O `.gitignore` do starter já ignora `.env`.
 
@@ -1543,4 +1544,88 @@ cd servidor-mcp; npm start          # terminal 1 (7301)
 cd agente; npm start                # terminal 2 (7300)
 cd agente; npm test                 # 114 testes; sobe os processos sozinhos em portas livres
 python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 36/36 com os dois processos recém-iniciados
+```
+
+### Passo 12: estabilização, erros e casos extremos (20/11/2026)
+
+| Item | Situação |
+|---|---|
+| Servidor MCP: nenhuma mudança de código; 14 testes novos de contrato, retry e limites | ✅ `servidor-mcp`: 149/149 |
+| Agente: timeout configurável do cliente MCP (`MCP_TIMEOUT_MS`) | ✅ `config.ts`, `mcp/cliente.ts`, `host/host.ts`, `a2a/config.ts`, `main.ts`, `demo.ts` |
+| Agente: resultado incompleto, timeout, continuação recusada e logs de uma linha | ✅ `a2a/reserva.ts` |
+| Agente: `SendMessage` só aceita `role: ROLE_USER` | ✅ `a2a/manipulador.ts` |
+| Testes novos: `falhas.test.ts` (13, proxy de falhas HTTP) e 3 em `a2a.test.ts` | ✅ `agente`: 130/130 |
+| Regressão | ✅ validador **36/36**, exit code 0 |
+
+**Diagnóstico.** O caminho feliz e os erros que o validador cobre já estavam certos no Passo 11. O que faltava era o que acontece **fora** do contrato: o MCP que não responde, responde pela metade ou com lixo, a continuação que o servidor recusa, uma mensagem A2A com o papel errado. Achei quatro defeitos no agente, todos corrigidos com teste de regressão. O servidor MCP não precisou de mudança: os testes novos só documentam e travam o comportamento que já existia.
+
+**Defeitos corrigidos.**
+
+| Problema | Causa | Correção |
+|---|---|---|
+| Um `complete` com `reservado: true` mas sem sala, horário ou responsável virava `COMPLETED` com um artifact pela metade | o agente confiava em `reservado` sozinho | os seis campos da reserva precisam ser strings não vazias; senão a Task termina `FAILED` ("O servidor de reservas respondeu sem os dados completos da reserva.") |
+| Um MCP que aceita a conexão e não responde prendia a Task por 60 s (padrão do SDK), mais que os 30 s do validador | nenhum timeout configurado | `MCP_TIMEOUT_MS` (padrão 20 s) vai para `connect`, `listTools`, `readResource` e `request` |
+| Timeout no `tools/call` virava "Servidor de reservas indisponivel" | o timeout era tratado como qualquer falha de transporte | timeout no `tools/call` vira "O servidor de reservas nao respondeu a tempo; nao e possivel confirmar se a reserva foi registrada." A reserva pode ter sido gravada, então o agente não reenvia |
+| `requestState` expirado ou adulterado no retry dava "Erro de protocolo (codigo -32602)", que não diz o que fazer | mensagem genérica | no retry, `-32602` vira "O servidor de reservas recusou a continuacao (prazo vencido ou estado invalido); nenhuma sala foi reservada. Faca um novo pedido." |
+| Logs de falha podiam ter várias linhas (stack, corpo HTML) | o erro era logado inteiro | `resumo()`: uma linha, no máximo 200 caracteres de detalhe |
+| `SendMessage` com `role: ROLE_AGENT` (ou sem `role`) criava Task | o SDK não confere o papel | `-32602` antes de criar Task ou tocar no MCP |
+
+**Política para falhas de infraestrutura.** Toda falha entre o agente e o MCP termina a Task em `FAILED`, com uma mensagem honesta e um log de uma linha. Nada é reenviado sozinho, porque `reservar_sala` escreve na agenda e o agente não tem como saber se a escrita aconteceu.
+
+| Falha (provada com o proxy de `falhas.test.ts`, HTTP real) | Desfecho |
+|---|---|
+| HTTP 500 com corpo HTML | `FAILED` "Servidor de reservas indisponivel no momento." |
+| Corpo que não é JSON, ou JSON que não é JSON-RPC | `FAILED` (motivo `resposta`) |
+| Resposta com outro id JSON-RPC (o SDK descarta e espera) | `FAILED` por timeout, mensagem "nao respondeu a tempo" |
+| Silêncio | `FAILED` em `MCP_TIMEOUT_MS`; no teste, 1,5 s |
+| Resultado de reserva incompleto | `FAILED`, sem artifact |
+| Silêncio no **retry** de uma Task pausada | `FAILED`; nenhum `tools/call` reenviado; a Task é terminal (`-32004`) |
+| MCP reiniciado | o agente reconecta no próximo pedido; uma continuação emitida antes do restart é aceita depois, se o segredo for o mesmo |
+
+**`requestState` como entrada não confiável.** O servidor é a única autoridade sobre a continuação. O agente guarda o valor e o devolve intacto, mas não o lê, não o valida e não o expira por conta própria. Os casos travados em teste (servidor e cenários HTTP):
+
+| Entrada | Resposta |
+|---|---|
+| malformado, vazio, um caractere trocado, assinado com outro segredo, expirado | `-32602` "Invalid or expired requestState" (HTTP 200: é o SDK que responde assim) |
+| `inputResponses` sem `requestState` | nova pergunta (`input_required`), nada gravado |
+| `requestState` sem `inputResponses`, ou com a chave errada | `isError` "Resposta ausente: …" |
+| escolha fora do `enum`, `content` vazio, sala numérica | `isError`, nada gravado |
+| `arguments` adulterados com um estado válido | vale o pedido selado no estado; os argumentos novos não têm efeito |
+| estado válido de outro conflito | vale o pedido selado nesse estado |
+| estado enviado a `consultar_disponibilidade` | ignorado (a tool é só leitura) |
+
+**Limites de domínio.** Um minuto é uma reserva válida, inclusive 08:00–08:01 e 19:59–20:00. Duas horas exatas passam e 2 h + 1 s não. 07:59 está fora da janela, inclusive quando o mesmo instante vem em UTC. Intervalos adjacentes (`[09:00, 10:00)` e `[10:00, 11:00)`) não conflitam. A comparação é sempre por instante, então `13:00Z` conflita com `10:00-03:00`.
+
+**Matriz de conformidade.**
+
+| Grupo | O que o desafio exige | O que o validador confere | O que os testes do projeto acrescentam |
+|---|---|---|---|
+| Servidor MCP | `_meta` obrigatório, headers iguais ao corpo, erros JSON-RPC corretos, `isError` com mensagem exata | 01 a 12 (catálogo, `_meta`, tool e URI inexistentes, política, mensagens exatas) e 20 | header vazio, versão não suportada (`-32022`), `tools/call` sem `Mcp-Name`, os seis erros de execução por HTTP sem gravar nada, limites exatos da janela e da duração |
+| MRTR | `input_required` com form mode, `requestState` íntegro e com prazo, capabilities por request | 13 a 19 (pausa, form mode, `-32021`, retry, estado e argumentos adulterados, recusa) | estado malformado, vazio, de outro conflito, sem resposta, argumentos adulterados, retry depois de restart com o mesmo segredo |
+| Host | descoberta, política, uma continuação por operação | indireto (via agente) | timeout configurável, recuperação depois de falha |
+| Servidor A2A | Agent Card 1.0, `SendMessage`, `GetTask`, máquina de estados, terminais | 21 a 28, 31, 35 e 36 | `role` errado, `contextId` de outra conversa, `GetTask` sem efeito no MCP, falhas de infraestrutura |
+| Ponte | pausa, escolha, recusa, isolamento, trace, sem vazamento | 29, 30, 32, 33 e 34 | silêncio no retry, continuação recusada, duas Tasks em ordem inversa |
+
+**Testes e mutações.** Para conferir que os testes novos pegam os defeitos, desfiz cada correção, uma de cada vez:
+
+| Mutação | Resultado |
+|---|---|
+| Sem a checagem de `role` | 1 teste falhou |
+| Aceitar resultado incompleto | 2 falharam |
+| Sem a mensagem de continuação recusada | 1 falhou |
+| Timeout ignorado (padrão do SDK) | 1 teste cancelado pelo `--test-timeout` (a Task fica pendurada) |
+| Timeout tratado como "indisponível" | 4 falharam |
+
+**Limitações conhecidas.**
+
+- Uma continuação pausada e abandonada fica na memória do agente até o processo reiniciar. Ela não vaza nem é retomada depois de terminal, e o servidor recusa o estado depois do TTL. Expirar o mapa do lado do agente fica para quando houver persistência.
+- Um `requestState` inválido volta como HTTP 200 com `-32602`, enquanto um `_meta` ausente volta como 400. É o comportamento do SDK 2.4.0. O validador confere só o código.
+- As reservas e as Tasks vivem na memória. Depois do restart do MCP, a agenda volta a ser a de `dados/`. Persistência está fora do escopo.
+
+**Comandos.**
+
+```powershell
+cd servidor-mcp; npm test           # 149
+cd agente; npm test                 # 130 (inclui o proxy de falhas)
+python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # 36/36, exit code 0
 ```

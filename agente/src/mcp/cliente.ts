@@ -33,6 +33,8 @@ export interface OpcoesDoCliente {
   url: URL;
   /** fetch alternativo (ex.: fetchObservado, nos testes e na demo). Padrão: o fetch global. */
   fetch?: FetchLike;
+  /** Espera máxima por cada resposta, em ms. Ausente: o padrão do SDK (60 s). Estourou → ErroMcp transporte (REQUEST_TIMEOUT). */
+  timeoutMs?: number;
 }
 
 export interface OpcoesDoRequest {
@@ -60,7 +62,10 @@ async function protegido<T>(operacao: () => Promise<T>): Promise<T> {
 }
 
 export class ClienteMcp {
-  private constructor(private readonly sdk: Client) {}
+  private constructor(
+    private readonly sdk: Client,
+    private readonly espera: { timeout?: number },
+  ) {}
 
   /**
    * Cria o Client do SDK e conecta. O connect() manda um server/discover
@@ -76,19 +81,20 @@ export class ClienteMcp {
       inputRequired: { autoFulfill: false },
     });
     const transporte = new StreamableHTTPClientTransport(opcoes.url, opcoes.fetch ? { fetch: opcoes.fetch } : undefined);
-    await protegido(() => sdk.connect(transporte));
-    return new ClienteMcp(sdk);
+    const espera = opcoes.timeoutMs === undefined ? {} : { timeout: opcoes.timeoutMs };
+    await protegido(() => sdk.connect(transporte, espera));
+    return new ClienteMcp(sdk, espera);
   }
 
   /** tools/list, sempre no fio (sem cache do SDK). */
   async listarTools(op?: OpcoesDoRequest): Promise<Tool[]> {
-    const { tools } = await protegido(() => this.sdk.listTools({ ...meta(op) }, { cacheMode: 'refresh' }));
+    const { tools } = await protegido(() => this.sdk.listTools({ ...meta(op) }, { cacheMode: 'refresh', ...this.espera }));
     return tools;
   }
 
   /** resources/read de uma URI. */
   async lerRecurso(uri: string, op?: OpcoesDoRequest): Promise<ReadResourceResult> {
-    return protegido(() => this.sdk.readResource({ uri, ...meta(op) }, { cacheMode: 'bypass' }));
+    return protegido(() => this.sdk.readResource({ uri, ...meta(op) }, { cacheMode: 'bypass', ...this.espera }));
   }
 
   /**
@@ -107,7 +113,7 @@ export class ClienteMcp {
     // input_required (que não tem structuredContent) e lança erro. O caminho
     // de schema explícito é o indicado pelo SDK para o modo manual.
     const resposta = await protegido(() =>
-      this.sdk.request({ method: 'tools/call', params }, withInputRequired(specTypeSchemas.CallToolResult), { allowInputRequired: true }),
+      this.sdk.request({ method: 'tools/call', params }, withInputRequired(specTypeSchemas.CallToolResult), { allowInputRequired: true, ...this.espera }),
     );
     return classificar({ nome, argumentos }, resposta as CallToolResult | InputRequiredResult);
   }

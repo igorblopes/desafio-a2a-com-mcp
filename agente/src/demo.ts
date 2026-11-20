@@ -122,6 +122,7 @@ try {
   host = await HostMcp.iniciar(
     {
       url: lerConfig().url,
+      timeoutMs: lerConfig().timeoutMs,
       // Mostra cada request no fio: id JSON-RPC, método, headers espelho e traceparent.
       fetch: fetchObservado((r) => {
         const tp = (r.params?._meta as Record<string, unknown> | undefined)?.traceparent ?? '-';

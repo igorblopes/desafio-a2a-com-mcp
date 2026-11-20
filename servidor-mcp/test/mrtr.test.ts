@@ -449,3 +449,58 @@ describe('reinício do servidor', () => {
     }
   });
 });
+
+// ---- Passo 12: estados inválidos e respostas incompletas no retry ----
+// Nenhum destes casos pode reservar nada. Dias 23 a 28/11.
+describe('retry: estado e resposta fora do contrato', () => {
+  const accept = (sala: string) => ({ action: 'accept', content: { sala } });
+
+  test('requestState malformado ou vazio → -32602, nada gravado', async () => {
+    const { chave, original } = await conflito(s.url, 'sala-garagem', '23');
+    for (const estado of ['nao-e-um-estado', '', 'v1.', 'v1.e30.AAAA']) {
+      const { corpo } = await retomar(s.url, original, chave, accept('sala-fusca'), estado);
+      assert.equal(corpo.error?.code, -32602, JSON.stringify(estado));
+    }
+    assert.deepEqual(await idsNaSala(s.url, 'sala-fusca', '23'), []);
+  });
+
+  test('inputResponses SEM requestState: vira uma chamada nova, que pergunta de novo e não grava', async () => {
+    const { chave, original } = await conflito(s.url, 'sala-garagem', '24');
+    const { corpo } = await chamar(s.url, 'reservar_sala', { arguments: original, inputResponses: { [chave]: accept('sala-fusca') } });
+    assert.equal(corpo.result.resultType, 'input_required');
+    assert.deepEqual(await idsNaSala(s.url, 'sala-fusca', '24'), []);
+  });
+
+  test('requestState válido SEM inputResponses → isError "Resposta ausente", nada gravado', async () => {
+    const { estado, original } = await conflito(s.url, 'sala-garagem', '25');
+    const { corpo } = await chamar(s.url, 'reservar_sala', { arguments: original, requestState: estado });
+    assert.equal(corpo.result.isError, true);
+    assert.match(corpo.result.content[0].text, /^Resposta ausente: inputResponses precisa da chave 'escolha_de_sala'$/);
+    assert.deepEqual(await idsNaSala(s.url, 'sala-fusca', '25'), []);
+  });
+
+  test('accept sem content, ou com content sem sala → isError, nada gravado', async () => {
+    const { chave, estado, original } = await conflito(s.url, 'sala-garagem', '26');
+    for (const resposta of [{ action: 'accept' }, { action: 'accept', content: {} }, { action: 'accept', content: { sala: 42 } }]) {
+      const { corpo } = await retomar(s.url, original, chave, resposta, estado);
+      assert.equal(corpo.result.isError, true, JSON.stringify(resposta));
+    }
+    assert.deepEqual(await idsNaSala(s.url, 'sala-fusca', '26'), []);
+    assert.deepEqual(await idsNaSala(s.url, 'sala-mirante', '26'), []);
+  });
+
+  test('requestState de reservar_sala apresentado a outra tool não tem efeito (só leitura, nada gravado)', async () => {
+    const { estado } = await conflito(s.url, 'sala-garagem', '27');
+    const consulta = await chamar(s.url, 'consultar_disponibilidade', { arguments: { sala: 'sala-fusca', inicio: em('27', '10:00'), fim: em('27', '11:00') }, requestState: estado });
+    assert.equal(consulta.corpo.result.structuredContent.livre, true);
+    assert.deepEqual(await idsNaSala(s.url, 'sala-fusca', '27'), []);
+  });
+
+  test('requestState de OUTRO conflito reaproveitado: vale o pedido selado nele, não os argumentos enviados', async () => {
+    const a = await conflito(s.url, 'sala-garagem', '28', 'Marty');
+    // Os argumentos de b, o estado de a: quem decide é o selo de a.
+    const { corpo } = await retomar(s.url, args('sala-garagem', em('28', '14:00'), em('28', '15:00'), 'Biff'), a.chave, accept('sala-fusca'), a.estado);
+    const sc = corpo.result.structuredContent;
+    assert.deepEqual([sc.sala, sc.inicio, sc.responsavel], ['sala-fusca', em('28', '10:00'), 'Marty']);
+  });
+});

@@ -216,3 +216,27 @@ describe('alternativas (MRTR)', () => {
     assert.equal(MENSAGENS.semAlternativas, 'Sem alternativas disponiveis no intervalo');
   });
 });
+
+// ---- Passo 12: limites exatos ----
+describe('limites exatos do pedido', () => {
+  test('um minuto é um intervalo válido (inclusive colado na abertura e no fechamento)', () => {
+    for (const [de, ate] of [['10:00', '10:01'], ['08:00', '08:01'], ['19:59', '20:00']]) {
+      assert.equal(validarPedido(SALAS, 'sala-garagem', em(de), em(ate)).ok, true, `${de}–${ate}`);
+    }
+  });
+  test('2h em ponto passa; 2h e 1 segundo não', () => {
+    assert.equal(validarPedido(SALAS, 'sala-garagem', em('10:00'), em('12:00')).ok, true);
+    reprovaCom(validarPedido(SALAS, 'sala-garagem', em('10:00'), '2026-11-03T12:00:01-03:00'), MENSAGENS.duracaoAcima);
+  });
+  test('07:59 → fora da janela; o mesmo instante em UTC (10:59Z) também', () => {
+    reprovaCom(validarPedido(SALAS, 'sala-garagem', em('07:59'), em('09:00')), MENSAGENS.foraDaJanela);
+    reprovaCom(validarPedido(SALAS, 'sala-garagem', '2026-11-03T10:59:00Z', em('09:00')), MENSAGENS.foraDaJanela);
+  });
+  test('dois pedidos adjacentes à mesma reserva, antes e depois, não conflitam entre si nem com ela', () => {
+    const antes = intervalo('13:00', '14:00');
+    const depois = intervalo('15:00', '16:00');
+    assert.equal(conflitos([RESERVA_GARAGEM], antes).length, 0);
+    assert.equal(conflitos([RESERVA_GARAGEM], depois).length, 0);
+    assert.equal(sobrepoe(antes, depois), false);
+  });
+});

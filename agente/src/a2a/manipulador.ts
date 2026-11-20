@@ -3,6 +3,9 @@
 // Task terminal → -32004), com os métodos fora do escopo do desafio
 // recusados explicitamente.
 //
+// Toda mensagem do cliente precisa vir com role ROLE_USER (o SDK aceitaria
+// ROLE_AGENT ou role ausente e trataria como pedido). -32602 antes de tudo.
+//
 // Continuação (SendMessage com taskId), além do que o SDK confere: a Task
 // precisa estar em INPUT_REQUIRED (uma Task ainda em WORKING não recebe
 // escolha) e só um SendMessage por Task é processado de cada vez. Node é
@@ -10,8 +13,8 @@
 //
 // Fora do escopo: streaming, resubscribe, CancelTask, ListTasks, push
 // notifications e card estendido. O card declara streaming e push como false.
-import { TaskState, type AgentCard, type SendMessageRequest } from '@a2a-js/sdk';
-import { UnsupportedOperationError } from '@a2a-js/sdk/errors';
+import { Role, TaskState, type AgentCard, type SendMessageRequest } from '@a2a-js/sdk';
+import { RequestMalformedError, UnsupportedOperationError } from '@a2a-js/sdk/errors';
 import { DefaultRequestHandler, type AgentExecutor, type ServerCallContext, type TaskStore } from '@a2a-js/sdk/server';
 import { ehTerminal, nomeDoEstado } from './tarefas/estados.ts';
 
@@ -29,6 +32,9 @@ export class ManipuladorDaCentral extends DefaultRequestHandler {
   }
 
   override async sendMessage(params: SendMessageRequest, context: ServerCallContext): ReturnType<DefaultRequestHandler['sendMessage']> {
+    if (params.message && params.message.role !== Role.ROLE_USER) {
+      throw new RequestMalformedError('A mensagem do cliente precisa ter role ROLE_USER.');
+    }
     const taskId = params.message?.taskId;
     if (!taskId) return super.sendMessage(params, context);
     // Inexistente ou terminal: o SDK responde (-32001 / -32004) sem tocar na Task.

@@ -34,6 +34,8 @@ export interface OpcoesDoHost {
   url: URL;
   /** fetch alternativo (testes e demo observam o tráfego por aqui). */
   fetch?: FetchLike;
+  /** Espera máxima por cada resposta MCP, em ms (padrão do SDK se ausente). */
+  timeoutMs?: number;
 }
 
 export interface Politica {
@@ -59,7 +61,7 @@ export class HostMcp {
   }
 
   async #conectar(ctx: ContextoDeExecucao): Promise<void> {
-    this.#cliente = await ClienteMcp.conectar({ url: this.opcoes.url, fetch: this.opcoes.fetch });
+    this.#cliente = await ClienteMcp.conectar({ url: this.opcoes.url, fetch: this.opcoes.fetch, timeoutMs: this.opcoes.timeoutMs });
     await this.descobrir(ctx);
   }
 

@@ -2,6 +2,7 @@
 //   A2A_PORT        porta HTTP do agente (padrão 7300)
 //   A2A_PUBLIC_URL  URL base anunciada no Agent Card (padrão http://localhost:<porta>)
 //   MCP_URL         endpoint do servidor MCP (padrão http://localhost:7301/mcp), via lerConfig()
+//   MCP_TIMEOUT_MS  espera máxima por uma resposta MCP (padrão 20000), via lerConfig()
 import { lerConfig } from '../config.ts';
 
 export const PORTA_A2A_PADRAO = 7300;
@@ -11,6 +12,8 @@ export interface ConfigDoAgente {
   /** URL base pública (sem barra final): o card anuncia `${urlPublica}/a2a`. */
   urlPublica: string;
   mcp: URL;
+  /** Espera máxima por uma resposta MCP, em ms. */
+  timeoutMcpMs: number;
 }
 
 export function lerConfigDoAgente(env: NodeJS.ProcessEnv = process.env): ConfigDoAgente {
@@ -23,5 +26,6 @@ export function lerConfigDoAgente(env: NodeJS.ProcessEnv = process.env): ConfigD
   } catch {
     throw new Error(`A2A_PUBLIC_URL inválida: ${urlPublica}`);
   }
-  return { porta, urlPublica, mcp: lerConfig(env).url };
+  const mcp = lerConfig(env);
+  return { porta, urlPublica, mcp: mcp.url, timeoutMcpMs: mcp.timeoutMs };
 }

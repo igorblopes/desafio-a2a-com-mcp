@@ -12,7 +12,7 @@ import { RepositorioDeTasks } from './a2a/tarefas/repositorio.ts';
 import { RetomadasPendentes } from './a2a/tarefas/retomadas.ts';
 
 const config = lerConfigDoAgente();
-const conexao = new ConexaoMcp({ url: config.mcp });
+const conexao = new ConexaoMcp({ url: config.mcp, timeoutMs: config.timeoutMcpMs });
 const app = criarAplicacao({
   card: criarAgentCard(config.urlPublica),
   tasks: new RepositorioDeTasks(),

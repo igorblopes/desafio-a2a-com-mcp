@@ -415,7 +415,7 @@ describe('MCP indisponível', () => {
 });
 
 describe('ponte: falhas na retomada', () => {
-  test('MCP fora do ar no retry → FAILED sem reserva; requestState rejeitado (segredo trocado) → FAILED com o erro de protocolo', async () => {
+  test('MCP fora do ar no retry → FAILED sem reserva; requestState rejeitado (segredo trocado) → FAILED "continuação recusada"', async () => {
     const porta = await portaLivre();
     const url = new URL(`http://localhost:${porta}/mcp`);
     let servidor = await subirServidor({ MCP_PORT: String(porta) });
@@ -441,12 +441,55 @@ describe('ponte: falhas na retomada', () => {
       servidor = await subirServidor({ MCP_PORT: String(porta) });
       const rb = (await rpc(sozinho.url, msg(`escolha=${b.alt}`, b.id))).corpo.result.task;
       assert.equal(rb.status.state, 'TASK_STATE_FAILED');
-      assert.match(textoDe(rb.status.message), /^Erro de protocolo no servidor de reservas \(codigo -32602\)\.$/);
+      assert.equal(textoDe(rb.status.message), 'O servidor de reservas recusou a continuacao (prazo vencido ou estado invalido); nenhuma sala foi reservada. Faca um novo pedido.');
       assert.deepEqual(rb.artifacts ?? [], []);
     } finally {
       await sozinho.parar();
       await servidor.parar();
     }
+  });
+});
+
+describe('Passo 12: entradas fora do contrato e GetTask sem efeito colateral', () => {
+  test('mensagem com role ROLE_AGENT ou sem role → -32602, nenhuma Task, nenhum request MCP', async () => {
+    const { traceparent, traceId } = novoTraceparent();
+    for (const role of ['ROLE_AGENT', undefined]) {
+      const message: Record<string, unknown> = { messageId: `msg-role-${role}`, parts: [{ text: pedido('sala-porao', '22', '10:00', '11:00', 'Role') }] };
+      if (role) message.role = role;
+      const r = await rpc(agente.url, { jsonrpc: '2.0', id: 'role', method: 'SendMessage', params: { message } }, { traceparent });
+      assert.equal(r.corpo.error?.code, -32602, String(role));
+      assert.equal(r.corpo.result, undefined);
+    }
+    assert.deepEqual(linhasDoMcp(traceId), []);
+  });
+
+  test('continuação com contextId de outra conversa → -32602; a Task segue pausada e a continuação certa conclui', async () => {
+    const { t } = await pausar('sala-garagem', '22', '14:00', '15:00', 'Contexto');
+    const alt = textoDe(t.status.message).replace('alternativas: ', '').split(', ')[0];
+    const antes = chamadasDoMcp().length;
+    const errado = await rpc(agente.url, { jsonrpc: '2.0', id: 'ctx', method: 'SendMessage', params: { message: { messageId: 'msg-ctx-errado', role: 'ROLE_USER', taskId: t.id, contextId: 'outro-contexto', parts: [{ text: `escolha=${alt}` }] } } });
+    assert.equal(errado.corpo.error?.code, -32602);
+    assert.equal(chamadasDoMcp().length, antes, 'nada foi ao MCP');
+    const g = (await getTask(t.id)).corpo.result;
+    assert.equal((g.task ?? g).status.state, 'TASK_STATE_INPUT_REQUIRED');
+    const certo = await rpc(agente.url, { jsonrpc: '2.0', id: 'ctx2', method: 'SendMessage', params: { message: { messageId: 'msg-ctx-certo', role: 'ROLE_USER', taskId: t.id, contextId: t.contextId, parts: [{ text: `escolha=${alt}` }] } } });
+    assert.equal(certo.corpo.result.task.status.state, 'TASK_STATE_COMPLETED');
+  });
+
+  test('GetTask em Task pausada e em Task cancelada: estado certo, histórico completo e nenhum request MCP', async () => {
+    const pausada = (await pausar('sala-garagem', '23', '10:00', '11:00', 'GetPausada')).t;
+    const recusavel = (await pausar('sala-garagem', '23', '14:00', '15:00', 'GetCancelada')).t;
+    const cancelada = (await enviar('escolha=recusar', { taskId: recusavel.id })).corpo.result.task;
+    assert.equal(cancelada.status.state, 'TASK_STATE_CANCELED');
+    const antes = chamadasDoMcp().length;
+    for (const [id, estado, tamanho] of [[pausada.id, 'TASK_STATE_INPUT_REQUIRED', 2], [cancelada.id, 'TASK_STATE_CANCELED', 4]] as const) {
+      for (let i = 0; i < 3; i++) {
+        const g = (await getTask(id, `get-${i}`)).corpo;
+        const tg = g.result.task ?? g.result;
+        assert.deepEqual([g.id, tg.id, tg.status.state, tg.history.length, (tg.artifacts ?? []).length], [`get-${i}`, id, estado, tamanho, 0]);
+      }
+    }
+    assert.equal(chamadasDoMcp().length, antes, 'GetTask não executa nada no MCP');
   });
 });
 
